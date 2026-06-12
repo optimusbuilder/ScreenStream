@@ -7,6 +7,7 @@ let latestMouse = { x: 0, y: 0 };
 let contentTabId = null;
 let offscreenReadyResolver = null;
 let mediaAcquiredResolver = null;
+let offscreenPongResolver = null;
 let captureReadyResolver = null;
 
 // Chrome requires tabCapture from a direct icon click — popup buttons break the gesture chain.
@@ -28,11 +29,11 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  ensureOffscreenReady().catch(() => {});
+  closeOffscreenDocument().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  ensureOffscreenReady().catch(() => {});
+  closeOffscreenDocument().catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -53,6 +54,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (offscreenReadyResolver) {
         offscreenReadyResolver();
         offscreenReadyResolver = null;
+      }
+      return false;
+
+    case 'PONG':
+      if (offscreenPongResolver) {
+        offscreenPongResolver();
+        offscreenPongResolver = null;
       }
       return false;
 
@@ -128,7 +136,7 @@ async function startSessionFromTab(tab) {
   startInferenceLoop();
 }
 
-function waitForOffscreenReady(timeoutMs = 5000) {
+function waitForOffscreenReady(timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       offscreenReadyResolver = null;
@@ -170,24 +178,53 @@ function waitForCaptureReady(timeoutMs = 15000) {
   });
 }
 
+async function closeOffscreenDocument() {
+  try {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+    });
+    if (contexts.length > 0) {
+      await chrome.offscreen.closeDocument();
+    }
+  } catch {
+    // Document may already be closed.
+  }
+}
+
+function waitForPong(timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      offscreenPongResolver = null;
+      reject(new Error('PONG timeout'));
+    }, timeoutMs);
+
+    offscreenPongResolver = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+}
+
 async function ensureOffscreenReady() {
-  const existingContexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT'],
+  await closeOffscreenDocument();
+
+  const htmlReady = waitForOffscreenReady();
+
+  await chrome.offscreen.createDocument({
+    url: 'offscreen.html',
+    reasons: ['USER_MEDIA'],
+    justification: 'Tab capture and LiveKit WebRTC publishing',
   });
 
-  const offscreenReady = waitForOffscreenReady();
+  await htmlReady;
 
-  if (existingContexts.length === 0) {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['USER_MEDIA'],
-      justification: 'Tab capture and LiveKit WebRTC publishing',
-    });
-  } else {
-    chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' }).catch(() => {});
+  const scriptReady = waitForPong();
+  chrome.runtime.sendMessage({ type: 'PING', target: 'offscreen' }).catch(() => {});
+  try {
+    await scriptReady;
+  } catch {
+    throw new Error('Offscreen script failed to load — run "npm run build" in extension/');
   }
-
-  await offscreenReady;
 }
 
 async function acquireTabMedia(mediaStreamId) {
@@ -321,16 +358,7 @@ async function handleStopSession() {
 
   chrome.runtime.sendMessage({ type: 'STOP_CAPTURE', target: 'offscreen' }).catch(() => {});
 
-  try {
-    const contexts = await chrome.runtime.getContexts({
-      contextTypes: ['OFFSCREEN_DOCUMENT'],
-    });
-    if (contexts.length > 0) {
-      await chrome.offscreen.closeDocument();
-    }
-  } catch (err) {
-    console.error('[bg] Close offscreen error:', err);
-  }
+  await closeOffscreenDocument();
 
   if (contentTabId) {
     chrome.tabs.sendMessage(contentTabId, { type: 'SESSION_STOPPED' }).catch(() => {});

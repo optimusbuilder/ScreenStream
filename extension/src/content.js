@@ -21,7 +21,7 @@
         type: 'MOUSE_MOVE',
         x: e.clientX,
         y: e.clientY,
-      });
+      }).catch(() => {});
     }
 
     mouseIdleTimer = setTimeout(() => {

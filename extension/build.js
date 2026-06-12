@@ -5,8 +5,11 @@ const watch = process.argv.includes('--watch');
 const config = {
   entryPoints: ['src/offscreen.js'],
   bundle: true,
-  outfile: 'dist/offscreen.bundle.js',
-  format: 'iife',
+  outdir: 'dist',
+  entryNames: 'offscreen',
+  chunkNames: 'chunks/[name]-[hash]',
+  format: 'esm',
+  splitting: true,
   platform: 'browser',
   target: ['chrome120'],
   minify: !watch,
@@ -23,6 +26,6 @@ if (watch) {
   });
 } else {
   esbuild.build(config).then(() => {
-    console.log('[build] offscreen.bundle.js built successfully');
+    console.log('[build] dist/offscreen.js built successfully');
   });
 }

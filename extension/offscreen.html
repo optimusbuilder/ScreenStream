@@ -2,6 +2,9 @@
 <html>
 <head><title>ScreenStream Offscreen</title></head>
 <body>
-  <script src="dist/offscreen.bundle.js"></script>
+  <script>
+    chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' }).catch(() => {});
+  </script>
+  <script type="module" src="dist/offscreen.js"></script>
 </body>
 </html>

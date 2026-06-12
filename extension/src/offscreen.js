@@ -1,16 +1,17 @@
-import { Room, RoomEvent, Track } from 'livekit-client';
-
 let room = null;
 let mediaStream = null;
 let videoTrack = null;
-
-chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' }).catch(() => {});
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target && msg.target !== 'offscreen') return;
 
   if (msg.type === 'start-recording') {
     acquireTabMedia(msg.data);
+  }
+
+  if (msg.type === 'PING') {
+    chrome.runtime.sendMessage({ type: 'PONG' });
+    return;
   }
 
   if (msg.type === 'PUBLISH_TO_LIVEKIT') {
@@ -26,7 +27,6 @@ async function acquireTabMedia(mediaStreamId) {
   try {
     stopCapture();
 
-    // Chrome docs format — mandatory constraints required for tab capture in offscreen
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -57,6 +57,8 @@ async function acquireTabMedia(mediaStreamId) {
 async function publishToLivekit(livekitUrl, livekitToken) {
   try {
     if (!videoTrack) throw new Error('No tab video track to publish');
+
+    const { Room, RoomEvent, Track } = await import('livekit-client');
 
     room = new Room({
       adaptiveStream: false,
