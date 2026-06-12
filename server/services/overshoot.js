@@ -214,6 +214,91 @@ async function infer(streamId, mouseX, mouseY) {
   throw lastError || new OvershotError(503, 'All models failed');
 }
 
+
+// ---- Navigation & Landmark Location ----
+
+const NAVIGATE_SCHEMA = {
+  type: 'object',
+  properties: {
+    found: { type: 'boolean' },
+    x: { type: 'number' },
+    y: { type: 'number' },
+    element_name: { type: 'string' },
+    guidance: { type: 'string' },
+  },
+  required: ['found', 'x', 'y', 'element_name', 'guidance'],
+};
+
+async function navigate(streamId, query, width, height) {
+  const prompt = `You are an AI web accessibility assistant helping a user locate an element on the screen. The user is asking to find: "${query}". The current viewport dimensions are ${width} width by ${height} height. Analyze the current live tab frame. Locate the target element. If found, return its center coordinates X and Y in viewport pixels (0 to ${width} and 0 to ${height}), its name/label, and brief direction/guidance (e.g. "near the top right"). If not found, set "found" to false, and set x and y to 0.`;
+
+  const models = [MODEL(), ...FALLBACK_MODELS.filter((m) => m !== MODEL())];
+
+  let lastError;
+  for (const model of models) {
+    try {
+      const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `ovs://streams/${streamId}?frame_index=-1`,
+                  },
+                },
+              ],
+            },
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'navigate_landmark',
+              strict: true,
+              schema: NAVIGATE_SCHEMA,
+            },
+          },
+          max_tokens: 150,
+        }),
+      }, { timeoutMs: 12000, retries: 2, backoffMs: [500, 1000] });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        lastError = new OvershotError(res.status, formatErrorBody(body) || 'Navigation failed');
+        if (res.status === 503) {
+          console.warn(`[overshoot] Model ${model} returned 503 during navigation, trying next model`);
+          continue;
+        }
+        throw lastError;
+      }
+
+      const completion = await res.json();
+      const raw = completion.choices?.[0]?.message?.content;
+
+      if (!raw) {
+        throw new OvershotError(500, 'Empty completion response');
+      }
+
+      return JSON.parse(raw);
+    } catch (err) {
+      lastError = err;
+      if (err.status === 503 || err.status === 504 || err.status === 502) {
+        console.warn(`[overshoot] Model ${model} failed navigation (${err.status}), trying next`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new OvershotError(503, 'All models failed navigation');
+}
+
 // ---- Page description for initial orientation ----
 
 async function describePage(streamId) {
@@ -300,7 +385,9 @@ module.exports = {
   getStreamStatus,
   waitForFrames,
   infer,
+  navigate,
   describePage,
   listModels,
   OvershotError,
 };
+

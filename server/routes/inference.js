@@ -31,6 +31,7 @@ router.post('/', async (req, res) => {
   }
 });
 
+
 // One-shot page description for initial orientation
 router.post('/describe', async (req, res) => {
   const { streamId } = req.body;
@@ -44,6 +45,23 @@ router.post('/describe', async (req, res) => {
     res.json({ description });
   } catch (err) {
     console.error('[inference/describe]', err.status || 500, err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// VLM-guided spatial element search
+router.post('/navigate', async (req, res) => {
+  const { streamId, query, width, height } = req.body;
+
+  if (!streamId || !query || width == null || height == null) {
+    return res.status(400).json({ error: 'streamId, query, width, and height are required' });
+  }
+
+  try {
+    const result = await overshoot.navigate(streamId, query, width, height);
+    res.json(result);
+  } catch (err) {
+    console.error('[inference/navigate]', err.status || 500, err.message);
     res.status(err.status || 500).json({ error: err.message });
   }
 });
