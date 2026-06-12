@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "ScreenStream-Access",
+  "version": "1.0.0",
+  "description": "Accessibility-first spatial audio navigator powered by real-time VLM analysis",
+  "permissions": [
+    "tabCapture",
+    "activeTab",
+    "scripting",
+    "offscreen",
+    "tabs",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ScreenStream-Access"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "http://localhost:3000/*"
+  ]
+}

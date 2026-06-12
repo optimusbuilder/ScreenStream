@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScreenStream-Access</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      padding: 20px;
+    }
+
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: #fff;
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 20px;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      background: #1a1a1a;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .status-dot.idle { background: #555; }
+    .status-dot.connecting { background: #f5a623; animation: pulse 1s infinite; }
+    .status-dot.active { background: #4cd964; }
+    .status-dot.error { background: #ff3b30; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-start {
+      background: #4cd964;
+      color: #000;
+      margin-bottom: 8px;
+    }
+
+    .btn-stop {
+      background: #ff3b30;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .toggle-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 13px;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 40px;
+      height: 22px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: #333;
+      border-radius: 22px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      left: 3px;
+      bottom: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: #4cd964;
+    }
+
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(18px);
+    }
+
+    .element-preview {
+      margin-top: 16px;
+      padding: 10px 12px;
+      background: #1a1a1a;
+      border-radius: 8px;
+      font-size: 12px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: #aaa;
+      min-height: 40px;
+      display: none;
+    }
+
+    .element-preview.visible { display: block; }
+  </style>
+</head>
+<body>
+  <h1>ScreenStream-Access</h1>
+  <p class="subtitle">Spatial audio navigator</p>
+
+  <div class="status-row">
+    <span class="status-dot idle" id="statusDot"></span>
+    <span id="statusText">Idle</span>
+  </div>
+
+  <button class="btn btn-start" id="startBtn">Start Session</button>
+  <button class="btn btn-stop" id="stopBtn" style="display:none;">Stop Session</button>
+
+  <div class="toggle-row">
+    <span>Spoken labels</span>
+    <label class="toggle-switch">
+      <input type="checkbox" id="speechToggle" checked>
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="element-preview" id="elementPreview"></div>
+
+  <script src="src/popup.js"></script>
+</body>
+</html>
