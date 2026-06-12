@@ -93,8 +93,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case 'VISUAL_LENS':
-      handleVisualLens(msg.x, msg.y)
-        .then((result) => sendResponse({ success: true, description: result.description }))
+      handleVisualLens(msg.x, msg.y, msg.context)
+        .then((result) => sendResponse({ success: true, description: result.description, audio: result.audio }))
         .catch((err) => sendResponse({ success: false, error: err.message }));
       return true;
 
@@ -310,6 +310,7 @@ async function requestPageDescription() {
       chrome.tabs.sendMessage(contentTabId, {
         type: 'PAGE_DESCRIPTION',
         description: data.description,
+        audio: data.audio,
       }).catch(() => {});
     }
 
@@ -317,6 +318,7 @@ async function requestPageDescription() {
     chrome.runtime.sendMessage({
       type: 'PAGE_DESCRIPTION',
       description: data.description,
+      audio: data.audio,
     }).catch(() => {});
   } catch (err) {
     console.warn('[bg] Page description error:', err.message);
@@ -366,7 +368,7 @@ async function handleVlmInference(x, y) {
   return res.json();
 }
 
-async function handleVisualLens(x, y) {
+async function handleVisualLens(x, y, context) {
   if (!session) throw new Error('No active session');
 
   const res = await fetch(`${SERVER_URL}/api/inference/visual-lens`, {
@@ -376,6 +378,7 @@ async function handleVisualLens(x, y) {
       streamId: session.streamId,
       x,
       y,
+      context,
     }),
   });
 
