@@ -24,6 +24,7 @@
   let searchInput = null;
   let micBtn = null;
   let speechRecognition = null;
+  let lastVlmElement = null;
 
   // --------------- Helper Functions ---------------
 
@@ -460,11 +461,78 @@
     window.speechSynthesis.speak(utterance);
   }
 
-  function buildSpeechText(result) {
-    let text = result.element_under_cursor;
-    if (result.interactive) {
-      text += ', interactive';
+  function generateActionableSpeech(label, tag, role, isInteractive) {
+    if (!label) return '';
+    
+    const lowerLabel = label.toLowerCase();
+    
+    // If not interactive, check if it's a heading
+    if (!isInteractive) {
+      if (tag && tag.startsWith('H') && tag.length === 2 && !isNaN(tag[1])) {
+        return `Heading level ${tag[1]}. ${label}.`;
+      }
+      return `${label}.`;
     }
+    
+    // Interactive elements
+    if (tag === 'A' || role === 'link') {
+      if (lowerLabel.includes('sign in') || lowerLabel.includes('login') || lowerLabel.includes('log in')) {
+        return `Sign in link. ${label}. Click to log into your account.`;
+      }
+      if (lowerLabel.includes('sign up') || lowerLabel.includes('register') || lowerLabel.includes('create account')) {
+        return `Sign up link. ${label}. Click to register a new account.`;
+      }
+      if (lowerLabel.includes('cart') || lowerLabel.includes('bag') || lowerLabel.includes('checkout')) {
+        return `Shopping Cart link. ${label}. Click to review items and check out.`;
+      }
+      return `Link. ${label}. Click to follow.`;
+    }
+    
+    if (tag === 'BUTTON' || role === 'button') {
+      if (lowerLabel.includes('search') || lowerLabel.includes('find')) {
+        return `Search button. ${label}. Click to submit query.`;
+      }
+      if (lowerLabel.includes('cart') || lowerLabel.includes('bag') || lowerLabel.includes('add')) {
+        return `Add to Bag button. ${label}. Click to add items to your shopping cart.`;
+      }
+      if (lowerLabel.includes('close') || lowerLabel.includes('dismiss')) {
+        return `Close button. Click to close.`;
+      }
+      if (lowerLabel.includes('submit') || lowerLabel.includes('send')) {
+        return `Submit button. ${label}. Click to send.`;
+      }
+      return `Button. ${label}. Click to activate.`;
+    }
+    
+    if (tag === 'INPUT') {
+      if (lowerLabel.includes('search')) {
+        return `Search text field. ${label}. Type your search query here.`;
+      }
+      if (lowerLabel.includes('email')) {
+        return `Email address input field. ${label}. Enter your email.`;
+      }
+      if (lowerLabel.includes('password')) {
+        return `Password input field. ${label}. Enter your password securely.`;
+      }
+      return `Text input field. ${label}. Type your response here.`;
+    }
+    
+    return `${label}, interactive element.`;
+  }
+
+  function buildSpeechText(result) {
+    let descriptionText = '';
+    if (result.element) {
+      const tag = result.element.tagName;
+      const role = result.element.getAttribute('role') || '';
+      descriptionText = generateActionableSpeech(result.element_under_cursor, tag, role, result.interactive);
+    } else {
+      descriptionText = result.element_under_cursor;
+      if (result.interactive) {
+        descriptionText += ', interactive.';
+      }
+    }
+    
     if (result.nearest_actionable_direction !== 'ON_OBJECT' && result.distance_pixels > 0) {
       const dirLabel = {
         N: 'above',
@@ -472,9 +540,9 @@
         E: 'to the right',
         W: 'to the left',
       }[result.nearest_actionable_direction] || '';
-      text += `. Nearest control ${dirLabel}, ${Math.round(result.distance_pixels)} pixels`;
+      descriptionText += ` Nearest control ${dirLabel}, ${Math.round(result.distance_pixels)} pixels.`;
     }
-    return text;
+    return descriptionText;
   }
 
   function announceResult(result, force = false) {
@@ -500,20 +568,16 @@
     announceResult(latestResult, false);
   }
 
-  // --------------- VLM Integration Features ---------------
-
   function requestVlmLens(x, y) {
     speakText('Analyzing visual details with Overshoot...', true);
     
     chrome.runtime.sendMessage({
-      type: 'VLM_INFERENCE',
+      type: 'VISUAL_LENS',
       x,
       y
     }, (response) => {
-      if (response && response.success && response.data) {
-        const data = response.data;
-        const text = buildSpeechText(data);
-        speakText(text, true);
+      if (response && response.success && response.description) {
+        speakText("Visual details: " + response.description, true);
       } else {
         console.error('VLM Lens error:', response?.error);
         speakText('Visual analysis failed.', true);
@@ -525,9 +589,13 @@
     if (!el) return;
     const isVisual = ['IMG', 'CANVAS', 'SVG', 'VIDEO'].includes(el.tagName) || el.getAttribute('role') === 'img';
     if (isVisual) {
+      if (el === lastVlmElement) return;
       hoverIdleTimer = setTimeout(() => {
+        lastVlmElement = el;
         requestVlmLens(x, y);
       }, 1200); 
+    } else {
+      lastVlmElement = null;
     }
   }
 
