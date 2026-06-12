@@ -301,8 +301,18 @@ async function navigate(streamId, query, width, height) {
 
 // ---- Describe Element (Visual Lens) ----
 
-async function describeElement(streamId, x, y) {
-  const prompt = `You are a web accessibility visual assistant. The user is hovering their mouse at coordinates X=${x}, Y=${y}. Analyze the live video stream frame and identify the image, chart, canvas, or visual element located at these coordinates. Describe the visual content in detail (e.g. if it is a photo, describe what is in the photo; if it is a chart, describe what it depicts and the trend/value). Be extremely descriptive but concise — keep your answer to exactly 1 or 2 sentences maximum.`;
+async function describeElement(streamId, x, y, context = null) {
+  let prompt = `You are a web accessibility visual assistant. The user is hovering their mouse at coordinates X=${x}, Y=${y}. Analyze the live video stream frame and identify the image, chart, canvas, or visual element located at these coordinates (marked visually by a pink target ring).`;
+
+  if (context) {
+    prompt += `\nHere is the metadata of the element under the cursor from the DOM to help anchor your description and avoid hallucinations:`;
+    if (context.tagName) prompt += `\nHTML Tag: ${context.tagName}`;
+    if (context.alt) prompt += `\nAlt Text: ${context.alt}`;
+    if (context.outerHTML) prompt += `\nOuter HTML Snippet: ${context.outerHTML}`;
+    if (context.textContext) prompt += `\nSurrounding Card Text: ${context.textContext}`;
+  }
+
+  prompt += `\nDescribe the visual content of this element in detail (e.g. if it is a photo, describe what is in the photo; if it is a chart, describe what it depicts and any visible values or trend). Use the DOM context metadata to ground your description accurately. Be extremely descriptive but concise — keep your answer to exactly 1 or 2 sentences maximum.`;
 
   const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
     method: 'POST',
