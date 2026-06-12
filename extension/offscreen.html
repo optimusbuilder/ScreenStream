@@ -2,9 +2,8 @@
 <html>
 <head><title>ScreenStream Offscreen</title></head>
 <body>
-  <script>
-    chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' }).catch(() => {});
-  </script>
+  <!-- MV3 CSP blocks inline scripts — must use external files -->
+  <script src="offscreen-init.js"></script>
   <script type="module" src="dist/offscreen.js"></script>
 </body>
 </html>
