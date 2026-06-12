@@ -26,6 +26,8 @@
   let speechRecognition = null;
   let lastVlmElement = null;
   let sessionActive = false;
+  let lastHeartbeatTime = 0;
+  const HEARTBEAT_INTERVAL_MS = 1500;
 
   // --------------- Helper Functions ---------------
 
@@ -237,161 +239,31 @@
 
   // --------------- Spatial Audio Engine ---------------
 
-  let audioCtx = null;
-  let panner = null;
-  let oscillator = null;
-  let gainNode = null;
-  let tickInterval = null;
-  let audioUnlocked = false;
-
-  let confirmOsc = null;
-  let confirmGain = null;
-
   function initAudio() {
-    if (audioCtx) return;
-
-    try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-      panner = audioCtx.createPanner();
-      panner.panningModel = 'HRTF';
-      panner.distanceModel = 'linear';
-      panner.maxDistance = 1000;
-      panner.refDistance = 1;
-      panner.connect(audioCtx.destination);
-
-      gainNode = audioCtx.createGain();
-      gainNode.gain.value = 0;
-      gainNode.connect(panner);
-
-      oscillator = audioCtx.createOscillator();
-      oscillator.type = 'sine';
-      oscillator.frequency.value = 660;
-      oscillator.connect(gainNode);
-      oscillator.start();
-
-      confirmGain = audioCtx.createGain();
-      confirmGain.gain.value = 0;
-      confirmGain.connect(audioCtx.destination);
-
-      confirmOsc = audioCtx.createOscillator();
-      confirmOsc.type = 'triangle';
-      confirmOsc.frequency.value = 1000;
-      confirmOsc.connect(confirmGain);
-      confirmOsc.start();
-    } catch (e) {
-      console.error('Failed to initialize AudioContext:', e);
-    }
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'INIT_AUDIO' });
   }
 
   function unlockAudio() {
-    if (!sessionActive) return;
-    if (audioUnlocked && audioCtx && audioCtx.state === 'running') return;
-    
-    initAudio();
-    if (!audioCtx) return;
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'UNLOCK_AUDIO' });
+  }
 
-    audioCtx.resume().then(() => {
-      audioUnlocked = true;
-    }).catch((err) => {
-      audioUnlocked = false;
-      console.warn('AudioContext resume failed:', err);
+  function stopAudio() {
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_AUDIO' });
+  }
+
+  function updateLocalBeacon(result) {
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'UPDATE_LOCAL_BEACON',
+      direction: result.nearest_actionable_direction,
+      distance: result.distance_pixels,
+      interactive: result.interactive,
+      element: result.element_under_cursor
     });
   }
 
-  // Automatically resume AudioContext upon first user interactions in the tab
-  window.addEventListener('click', unlockAudio);
-  window.addEventListener('keydown', unlockAudio);
-  window.addEventListener('mousedown', unlockAudio);
-
-  chrome.storage.local.get(['sessionActive'], (data) => {
-    if (data.sessionActive) {
-      sessionActive = true;
-      createVisualCursor();
-      updateInteractiveElementsCache();
-    }
-  });
-
-  function stopAudio() {
-    if (tickInterval) {
-      clearInterval(tickInterval);
-      tickInterval = null;
-    }
-    if (audioCtx && audioCtx.state === 'running') {
-      audioCtx.suspend();
-    }
-    audioUnlocked = false;
-  }
-
-  let lastBeaconElement = '';
-
-  function updateLocalBeacon(result) {
-    if (!audioUnlocked || !audioCtx || audioCtx.state !== 'running') return;
-
-    const dir = result.nearest_actionable_direction;
-    const dist = result.distance_pixels;
-    const interactive = result.interactive;
-    const element = result.element_under_cursor;
-
-    // --- ON_OBJECT: plays chord/tone confirmation ---
-    if (dir === 'ON_OBJECT') {
-      panner.positionX.setTargetAtTime(0, audioCtx.currentTime, 0.02);
-      panner.positionZ.setTargetAtTime(0, audioCtx.currentTime, 0.02);
-
-      if (element !== lastBeaconElement) {
-        const now = audioCtx.currentTime;
-        confirmOsc.frequency.setValueAtTime(interactive ? 1200 : 800, now);
-        confirmGain.gain.setValueAtTime(0, now);
-        confirmGain.gain.linearRampToValueAtTime(0.5, now + 0.02);
-        confirmGain.gain.linearRampToValueAtTime(0, now + 0.15);
-
-        if (interactive) {
-          confirmOsc.frequency.setValueAtTime(1500, now + 0.12);
-          confirmGain.gain.linearRampToValueAtTime(0.4, now + 0.14);
-          confirmGain.gain.linearRampToValueAtTime(0, now + 0.25);
-        }
-      }
-
-      if (tickInterval) {
-        clearInterval(tickInterval);
-        tickInterval = null;
-      }
-      gainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.01);
-
-      lastBeaconElement = element;
-      return;
-    }
-
-    // --- Directional beacon: pan towards target ---
-    let panX = 0, panZ = 0;
-    switch (dir) {
-      case 'E': panX = 1; break;
-      case 'W': panX = -1; break;
-      case 'N': panZ = -1; break;
-      case 'S': panZ = 1; break;
-    }
-    panner.positionX.setTargetAtTime(panX * 8, audioCtx.currentTime, 0.03);
-    panner.positionZ.setTargetAtTime(panZ * 8, audioCtx.currentTime, 0.03);
-
-    const baseFreq = interactive ? 880 : 440;
-    oscillator.frequency.setTargetAtTime(baseFreq, audioCtx.currentTime, 0.05);
-
-    const clampedDist = Math.max(1, Math.min(dist, 500));
-    const tickRate = Math.max(100, Math.min(800, clampedDist * 1.6));
-    const tickGain = Math.max(0.15, 0.5 - (clampedDist / 500) * 0.35);
-
-    if (tickInterval) clearInterval(tickInterval);
-    tickInterval = setInterval(() => {
-      const now = audioCtx.currentTime;
-      gainNode.gain.setTargetAtTime(tickGain, now, 0.01);
-      gainNode.gain.setTargetAtTime(0, now + 0.05, 0.02);
-    }, tickRate);
-
-    lastBeaconElement = element;
-  }
-
   function updateNavigationBeacon() {
-    if (!audioUnlocked || !audioCtx || audioCtx.state !== 'running' || !currentTargetCoord) return;
+    if (!currentTargetCoord) return;
     
     const dx = currentTargetCoord.x - latestMouse.x;
     const dy = currentTargetCoord.y - latestMouse.y;
@@ -401,49 +273,18 @@
     if (dist < 30) {
       currentTargetCoord = null;
       removeTargetBeacon();
-      
-      const now = audioCtx.currentTime;
-      confirmOsc.frequency.setValueAtTime(1000, now);
-      confirmGain.gain.setValueAtTime(0, now);
-      confirmGain.gain.linearRampToValueAtTime(0.6, now + 0.05);
-      confirmGain.gain.linearRampToValueAtTime(0.2, now + 0.15);
-      confirmOsc.frequency.setValueAtTime(1300, now + 0.15);
-      confirmGain.gain.linearRampToValueAtTime(0.6, now + 0.20);
-      confirmGain.gain.linearRampToValueAtTime(0, now + 0.40);
-      
       speakText(`Target locked!`, true);
-      
-      if (tickInterval) clearInterval(tickInterval);
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_LOCKON_SOUND' });
       return;
     }
     
-    // Guide towards target coordinate
-    let dir = 'ON_OBJECT';
-    let panX = 0, panZ = 0;
-    if (Math.abs(dx) > Math.abs(dy)) {
-      dir = dx > 0 ? 'E' : 'W';
-      panX = dx > 0 ? 1 : -1;
-    } else {
-      dir = dy > 0 ? 'S' : 'N';
-      panZ = dy > 0 ? 1 : -1;
-    }
-    
-    panner.positionX.setTargetAtTime(panX * 8, audioCtx.currentTime, 0.03);
-    panner.positionZ.setTargetAtTime(panZ * 8, audioCtx.currentTime, 0.03);
-    
-    const baseFreq = 880; 
-    oscillator.frequency.setTargetAtTime(baseFreq, audioCtx.currentTime, 0.05);
-    
-    const clampedDist = Math.max(1, Math.min(dist, 800));
-    const tickRate = Math.max(80, Math.min(800, clampedDist * 1.0));
-    const tickGain = Math.max(0.25, 0.6 - (clampedDist / 800) * 0.35);
-    
-    if (tickInterval) clearInterval(tickInterval);
-    tickInterval = setInterval(() => {
-      const now = audioCtx.currentTime;
-      gainNode.gain.setTargetAtTime(tickGain, now, 0.01);
-      gainNode.gain.setTargetAtTime(0, now + 0.05, 0.02);
-    }, tickRate);
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'UPDATE_NAVIGATION_BEACON',
+      dx: dx,
+      dy: dy,
+      dist: dist
+    });
   }
 
   // --------------- Speech Announcer ---------------
@@ -465,44 +306,16 @@
     }
   });
 
-  let activeUtterance = null;
-
   function speakText(text, priority = false) {
     if (!speechEnabled) return;
-    
-    try {
-      if (priority) {
-        window.speechSynthesis.cancel();
-      }
-      
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.3; // Speed up speech synthesis slightly (1.3 is very readable)
-      utterance.volume = 0.95;
-      
-      activeUtterance = utterance;
-      
-      utterance.onend = () => {
-        if (activeUtterance === utterance) {
-          activeUtterance = null;
-        }
-      };
-      utterance.onerror = () => {
-        if (activeUtterance === utterance) {
-          activeUtterance = null;
-        }
-      };
-      
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-      }
-      
-      // Wrap in a short timeout to let Chrome cancel complete before speaking
-      setTimeout(() => {
-        window.speechSynthesis.speak(utterance);
-      }, 15);
-    } catch (e) {
-      console.error('Speech synthesis error:', e);
+    if (priority) {
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_ELEVENLABS' });
     }
+    chrome.runtime.sendMessage({
+      type: 'SPEAK',
+      text: text,
+      priority: priority
+    });
   }
 
   function generateActionableSpeech(label, tag, role, isInteractive) {
@@ -521,15 +334,15 @@
     // Interactive elements
     if (tag === 'A' || role === 'link') {
       if (lowerLabel.includes('sign in') || lowerLabel.includes('login') || lowerLabel.includes('log in')) {
-        return `Sign in link. ${label}. Click to log into your account.`;
+        return `${label}. Click to log into your account.`;
       }
       if (lowerLabel.includes('sign up') || lowerLabel.includes('register') || lowerLabel.includes('create account')) {
-        return `Sign up link. ${label}. Click to register a new account.`;
+        return `${label}. Click to register a new account.`;
       }
       if (lowerLabel.includes('cart') || lowerLabel.includes('bag') || lowerLabel.includes('checkout')) {
-        return `Shopping Cart link. ${label}. Click to review items and check out.`;
+        return `Shopping Cart. ${label}. Click to review items and check out.`;
       }
-      return `Link. ${label}. Click to follow.`;
+      return `${label}. Click to follow.`;
     }
     
     if (tag === 'BUTTON' || role === 'button') {
@@ -608,39 +421,16 @@
     announceResult(latestResult, false);
   }
 
-  let activeAudio = null;
+  let activeAudioCallback = null;
 
   function playBase64Audio(base64Data, onEndCallback = null) {
-    try {
-      if (activeAudio) {
-        activeAudio.pause();
-        activeAudio = null;
-      }
-      
-      window.speechSynthesis.cancel();
-      
-      activeAudio = new Audio("data:audio/mp3;base64," + base64Data);
-      activeAudio.playbackRate = 1.18; // Speed up ElevenLabs speech synthesis playback rate!
-      
-      if (onEndCallback) {
-        activeAudio.onended = () => {
-          activeAudio = null;
-          onEndCallback();
-        };
-        activeAudio.onerror = () => {
-          activeAudio = null;
-          onEndCallback();
-        };
-      }
-      
-      activeAudio.play().catch((err) => {
-        console.warn('Audio play blocked/failed:', err);
-        if (onEndCallback) onEndCallback();
-      });
-    } catch (err) {
-      console.error('Error playing base64 audio:', err);
-      if (onEndCallback) onEndCallback();
-    }
+    activeAudioCallback = onEndCallback;
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'PLAY_BASE64_AUDIO',
+      base64Data: base64Data,
+      playbackRate: 1.18
+    });
   }
 
   function requestVlmLens(x, y) {
@@ -903,20 +693,21 @@
     
     speechRecognition.onstart = () => {
       micBtn.classList.add('listening');
-      speakText('Listening...', true);
     };
     
     speechRecognition.onresult = (e) => {
       const text = e.results[0][0].transcript;
       searchInput.value = text;
-      speakText(`Searching for ${text}`, true);
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_STOP_RECORD' });
       submitSearch(text);
     };
     
     speechRecognition.onerror = (e) => {
       console.error('Speech recognition error:', e.error);
-      speakText('Speech recognition failed. Please try typing.', true);
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_STOP_RECORD' });
       micBtn.classList.remove('listening');
+      closeSearchModal();
+      speakText('Voice search failed.', true);
     };
     
     speechRecognition.onend = () => {
@@ -983,7 +774,8 @@
       if (micBtn.classList.contains('listening')) {
         speechRecognition.stop();
       } else {
-        speechRecognition.start();
+        chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_START_RECORD' });
+        try { speechRecognition.start(); } catch(e){}
       }
     });
     
@@ -1001,7 +793,11 @@
       }
     });
     
-    speakText('What element would you like to find?', true);
+    // Play recording start beep and start capturing voice automatically!
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_START_RECORD' });
+    if (speechRecognition) {
+      try { speechRecognition.start(); } catch(e){}
+    }
   }
   
   function closeSearchModal() {
@@ -1013,22 +809,194 @@
       navigationModal = null;
       searchInput = null;
       micBtn = null;
-      speakText('Navigator closed.', true);
     }
   }
 
-  function submitSearch(query) {
-    if (!query || !query.trim()) return;
+  function submitSearch(command) {
+    if (!command || !command.trim()) return;
     
-    speakText('Analyzing stream with Overshoot...', true);
     closeSearchModal();
+    const text = command.trim().toLowerCase();
+    
+    // Pattern 1: "search for [query]" or "search [query]"
+    if (text.startsWith('search for ') || text.startsWith('search ')) {
+      const searchTerm = text.startsWith('search for ') ? command.substring(11).trim() : command.substring(7).trim();
+      executeSearchTask(searchTerm);
+      return;
+    }
+    
+    // Pattern 2: "click [element]" or "go to [element]" or "open [element]"
+    if (text.startsWith('click ') || text.startsWith('go to ') || text.startsWith('open ')) {
+      let targetElement = '';
+      if (text.startsWith('click ')) targetElement = command.substring(6).trim();
+      else if (text.startsWith('go to ')) targetElement = command.substring(6).trim();
+      else targetElement = command.substring(5).trim();
+      
+      executeClickTask(targetElement);
+      return;
+    }
+    
+    // Pattern 3: default conversational path (Q&A)
+    // If the query contains question words or doesn't look like a single-word target,
+    // let's send it to Conversational Q&A.
+    const questionWords = ['what', 'why', 'how', 'who', 'where', 'when', 'is', 'are', 'can', 'could', 'should', 'would', 'summarize', 'tell', 'read', 'describe'];
+    const hasQuestionWord = questionWords.some(word => text.includes(word));
+    // If it has spaces (more than 2 words) or contains a question word:
+    if (text.split(/\s+/).length > 2 || hasQuestionWord) {
+      executeAskTask(command.trim());
+      return;
+    }
+    
+    // Pattern 4: default spatial guide (original behavior)
+    executeGuideTask(command.trim());
+  }
+
+  function executeSearchTask(searchTerm) {
+    speakText(`Locating search box to search for: ${searchTerm}...`, true);
     
     const width = window.innerWidth;
     const height = window.innerHeight;
     
     chrome.runtime.sendMessage({
       type: 'NAVIGATE_QUERY',
-      query: query.trim(),
+      query: 'search input box or search bar',
+      width,
+      height
+    }, (response) => {
+      if (response && response.success && response.data && response.data.found) {
+        const data = response.data;
+        const targetEl = document.elementFromPoint(data.x, data.y);
+        const inputEl = findInputElement(targetEl);
+        
+        if (inputEl) {
+          // Move virtual cursor to search box
+          latestMouse = { x: data.x, y: data.y };
+          if (visualCursor) {
+            visualCursor.style.left = `${data.x}px`;
+            visualCursor.style.top = `${data.y}px`;
+          }
+          
+          inputEl.focus();
+          inputEl.value = searchTerm;
+          
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+          inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+          
+          speakText(`Searching for ${searchTerm}...`, true);
+          
+          setTimeout(() => {
+            const form = inputEl.form;
+            if (form) {
+              form.submit();
+            } else {
+              const enterEvent = new KeyboardEvent('keydown', {
+                key: 'Enter',
+                keyCode: 13,
+                code: 'Enter',
+                which: 13,
+                bubbles: true,
+                cancelable: true
+              });
+              inputEl.dispatchEvent(enterEvent);
+            }
+          }, 800);
+        } else {
+          speakText(`Found search box coordinates but could not locate the input element.`, true);
+        }
+      } else {
+        // Local DOM fallback
+        const localInput = findSearchInputLocally();
+        if (localInput) {
+          localInput.focus();
+          localInput.value = searchTerm;
+          localInput.dispatchEvent(new Event('input', { bubbles: true }));
+          localInput.dispatchEvent(new Event('change', { bubbles: true }));
+          speakText(`Searching for ${searchTerm} using local fallback...`, true);
+          setTimeout(() => {
+            if (localInput.form) {
+              localInput.form.submit();
+            } else {
+              localInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            }
+          }, 800);
+        } else {
+          speakText(`Could not find a search box on this page.`, true);
+        }
+      }
+    });
+  }
+
+  function executeClickTask(targetElement) {
+    speakText(`Locating and clicking: ${targetElement}...`, true);
+    
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    
+    chrome.runtime.sendMessage({
+      type: 'NAVIGATE_QUERY',
+      query: targetElement,
+      width,
+      height
+    }, (response) => {
+      if (response && response.success && response.data && response.data.found) {
+        const data = response.data;
+        
+        latestMouse = { x: data.x, y: data.y };
+        if (visualCursor) {
+          visualCursor.style.left = `${data.x}px`;
+          visualCursor.style.top = `${data.y}px`;
+        }
+        
+        const rawEl = document.elementFromPoint(data.x, data.y);
+        const clickableEl = findClickableElement(rawEl);
+        
+        if (clickableEl) {
+          speakText(`Clicking ${data.element_name}.`, true);
+          clickableEl.focus();
+          clickableEl.click();
+        } else if (rawEl) {
+          speakText(`Clicking ${data.element_name}.`, true);
+          rawEl.click();
+        } else {
+          speakText(`Found ${targetElement} but could not click it.`, true);
+        }
+      } else {
+        speakText(`Could not locate ${targetElement} to click.`, true);
+      }
+    });
+  }
+
+  function executeAskTask(question) {
+    speakText('Analyzing page to answer your question...', true);
+    
+    chrome.runtime.sendMessage({
+      type: 'ASK_QUERY',
+      query: question
+    }, (response) => {
+      if (response && response.success && response.description) {
+        const announceText = response.description;
+        
+        if (response.audio) {
+          playBase64Audio(response.audio);
+        } else {
+          speakText(announceText, true);
+        }
+      } else {
+        console.error('Q&A error:', response?.error);
+        speakText('Sorry, I could not answer that question.', true);
+      }
+    });
+  }
+
+  function executeGuideTask(query) {
+    speakText('Analyzing stream with Overshoot...', true);
+    
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    
+    chrome.runtime.sendMessage({
+      type: 'NAVIGATE_QUERY',
+      query: query,
       width,
       height
     }, (response) => {
@@ -1055,6 +1023,38 @@
         speakText('Navigation search failed. Please try again.', true);
       }
     });
+  }
+
+  function findInputElement(el) {
+    if (!el) return null;
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el;
+    const input = el.querySelector('input, textarea');
+    if (input) return input;
+    
+    let parent = el.parentElement;
+    for (let i = 0; i < 3 && parent; i++) {
+      if (parent.tagName === 'INPUT') return parent;
+      const childInput = parent.querySelector('input, textarea');
+      if (childInput) return childInput;
+      parent = parent.parentElement;
+    }
+    return null;
+  }
+
+  function findSearchInputLocally() {
+    return document.querySelector('input[type="search"], input[name*="search" i], input[placeholder*="search" i]');
+  }
+
+  function findClickableElement(el) {
+    if (!el) return null;
+    let current = el;
+    while (current && current !== document.body && current !== document.documentElement) {
+      if (isInteractive(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
   }
 
   // --------------- Mouse Movements ---------------
@@ -1100,6 +1100,10 @@
         latestResult = result;
         updateLocalBeacon(result);
         
+        if (result.distance_pixels > 200) {
+          triggerHeartbeat();
+        }
+        
         if (result.element_under_cursor !== lastSpokenElement) {
           announceResult(result);
         }
@@ -1129,8 +1133,34 @@
 
   // --------------- Keyboard Shortcuts ---------------
 
+  let lastShiftTime = 0;
+
   window.addEventListener('keydown', (e) => {
     if (!sessionActive) return;
+
+    // Shift double-press detection
+    if (e.key === 'Shift') {
+      const now = Date.now();
+      if (now - lastShiftTime < 300) {
+        e.preventDefault();
+        openSearchModal();
+      }
+      lastShiftTime = now;
+    }
+
+    // Tilde key trigger
+    if (e.key === '`') {
+      const isTyping = document.activeElement && (
+        document.activeElement.tagName === 'INPUT' || 
+        document.activeElement.tagName === 'TEXTAREA' || 
+        document.activeElement.isContentEditable
+      );
+      if (!isTyping) {
+        e.preventDefault();
+        openSearchModal();
+      }
+    }
+
     // Alt+Shift+R: Re-read current element / beacon target
     if (e.altKey && e.shiftKey && e.key === 'R') {
       e.preventDefault();
@@ -1154,7 +1184,55 @@
       e.preventDefault();
       requestVlmLens(latestMouse.x, latestMouse.y);
     }
+
+    // Alt+Shift+S: Trigger page layout Sonar Sweep
+    if (e.altKey && e.shiftKey && e.key === 'S') {
+      e.preventDefault();
+      triggerSonarSweep();
+    }
   });
+
+  function triggerHeartbeat() {
+    const now = Date.now();
+    if (now - lastHeartbeatTime >= HEARTBEAT_INTERVAL_MS) {
+      lastHeartbeatTime = now;
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_HEARTBEAT' });
+    }
+  }
+
+  function triggerSonarSweep() {
+    if (!sessionActive) return;
+    
+    speakText('Sweeping page layout...', true);
+    
+    const elements = [];
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    
+    cachedInteractiveElements.forEach((el) => {
+      const rect = el.getBoundingClientRect();
+      if (rect.right < 0 || rect.bottom < 0 || rect.left > viewportWidth || rect.top > viewportHeight) {
+        return;
+      }
+      if (rect.width === 0 || rect.height === 0) {
+        return;
+      }
+      
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      
+      const xRatio = (centerX / viewportWidth) * 2 - 1;
+      const yRatio = (centerY / viewportHeight) * 2 - 1;
+      
+      elements.push({ xRatio, yRatio });
+    });
+    
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'SONAR_SWEEP',
+      elements: elements
+    });
+  }
 
   // --------------- Cache Re-build triggers ---------------
 
@@ -1189,20 +1267,35 @@
       }, 2500);
     }
 
+    if (msg.type === 'AUDIO_ENDED') {
+      if (activeAudioCallback) {
+        const cb = activeAudioCallback;
+        activeAudioCallback = null;
+        cb();
+      }
+    }
+
     if (msg.type === 'SESSION_STOPPED') {
       sessionActive = false;
       stopAudio();
-      window.speechSynthesis.cancel();
-      if (activeAudio) {
-        activeAudio.pause();
-        activeAudio = null;
-      }
+      chrome.runtime.sendMessage({ type: 'STOP_SPEECH' });
+      activeAudioCallback = null;
       removeVisualCursor();
       currentTargetCoord = null;
       latestResult = null;
       lastSpokenElement = '';
       lastBeaconElement = '';
       speakText('ScreenStream stopped.');
+    }
+  });
+
+  chrome.storage.local.get(['sessionActive'], (data) => {
+    if (data.sessionActive) {
+      sessionActive = true;
+      createVisualCursor();
+      updateInteractiveElementsCache();
+      initAudio();
+      chrome.runtime.sendMessage({ type: 'PAGE_NAVIGATED' });
     }
   });
 })();

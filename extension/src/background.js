@@ -103,6 +103,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then((result) => sendResponse({ success: true, data: result }))
         .catch((err) => sendResponse({ success: false, error: err.message }));
       return true;
+
+    case 'ASK_QUERY':
+      handleAskQuery(msg.query)
+        .then((result) => sendResponse({ success: true, description: result.description, audio: result.audio }))
+        .catch((err) => sendResponse({ success: false, error: err.message }));
+      return true;
+
+    case 'SPEAK':
+      if (msg.priority) {
+        chrome.tts.stop();
+      }
+      chrome.tts.speak(msg.text, {
+        rate: 1.3,
+        volume: 0.95,
+        onEvent: (event) => {
+          if (event.type === 'start') {
+            chrome.runtime.sendMessage({ target: 'offscreen', type: 'SPEECH_STATUS', active: true }).catch(() => {});
+          } else if (event.type === 'end' || event.type === 'interrupted' || event.type === 'cancelled' || event.type === 'error') {
+            chrome.runtime.sendMessage({ target: 'offscreen', type: 'SPEECH_STATUS', active: false }).catch(() => {});
+          }
+        }
+      });
+      return false;
+
+    case 'STOP_SPEECH':
+      chrome.tts.stop();
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'SPEECH_STATUS', active: false }).catch(() => {});
+      return false;
+
+    case 'PAGE_NAVIGATED':
+      contentTabId = sender.tab.id;
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_AUDIO' });
+      requestPageDescription();
+      return false;
   }
 });
 
@@ -385,6 +419,26 @@ async function handleVisualLens(x, y, context) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Visual lens server error ${res.status}`);
+  }
+
+  return res.json();
+}
+
+async function handleAskQuery(query) {
+  if (!session) throw new Error('No active session');
+
+  const res = await fetch(`${SERVER_URL}/api/inference/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      streamId: session.streamId,
+      query,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Q&A server error ${res.status}`);
   }
 
   return res.json();

@@ -395,6 +395,49 @@ async function describePage(streamId) {
   return raw;
 }
 
+// ---- Q&A / Conversational Tab Query ----
+
+async function ask(streamId, query) {
+  const prompt = `You are a conversational web accessibility partner for a blind user. The user is asking the following question about the current web page: "${query}". Analyze the live page frame. Answer their question concisely, accurately, and clearly. Keep the explanation user-friendly and limit your response to at most 3 sentences.`;
+
+  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({
+      model: MODEL(),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `ovs://streams/${streamId}?frame_index=-1`,
+              },
+            },
+          ],
+        },
+      ],
+      max_tokens: 250,
+    }),
+  }, { timeoutMs: 15000, retries: 2, backoffMs: [1000, 2000] });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Q&A request failed');
+  }
+
+  const completion = await res.json();
+  const raw = completion.choices?.[0]?.message?.content;
+
+  if (!raw) {
+    throw new OvershotError(500, 'Empty conversational response');
+  }
+
+  return raw;
+}
+
 // ---- Frame waiting ----
 
 async function waitForFrames(streamId, { timeoutMs = 30000, pollMs = 500 } = {}) {
@@ -441,6 +484,7 @@ module.exports = {
   navigate,
   describeElement,
   describePage,
+  ask,
   listModels,
   OvershotError,
 };

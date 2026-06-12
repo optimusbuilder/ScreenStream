@@ -86,4 +86,22 @@ router.post('/visual-lens', async (req, res) => {
   }
 });
 
+// Conversational Tab Q&A Endpoint
+router.post('/ask', async (req, res) => {
+  const { streamId, query } = req.body;
+
+  if (!streamId || !query) {
+    return res.status(400).json({ error: 'streamId and query are required' });
+  }
+
+  try {
+    const description = await overshoot.ask(streamId, query);
+    const audio = await tts.synthesizeSpeech(description);
+    res.json({ description, audio });
+  } catch (err) {
+    console.error('[inference/ask]', err.status || 500, err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
