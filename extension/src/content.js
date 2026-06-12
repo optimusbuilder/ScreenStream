@@ -250,44 +250,52 @@
   function initAudio() {
     if (audioCtx) return;
 
-    audioCtx = new AudioContext();
-    audioCtx.suspend();
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    panner = audioCtx.createPanner();
-    panner.panningModel = 'HRTF';
-    panner.distanceModel = 'linear';
-    panner.maxDistance = 1000;
-    panner.refDistance = 1;
-    panner.connect(audioCtx.destination);
+      panner = audioCtx.createPanner();
+      panner.panningModel = 'HRTF';
+      panner.distanceModel = 'linear';
+      panner.maxDistance = 1000;
+      panner.refDistance = 1;
+      panner.connect(audioCtx.destination);
 
-    gainNode = audioCtx.createGain();
-    gainNode.gain.value = 0;
-    gainNode.connect(panner);
+      gainNode = audioCtx.createGain();
+      gainNode.gain.value = 0;
+      gainNode.connect(panner);
 
-    oscillator = audioCtx.createOscillator();
-    oscillator.type = 'sine';
-    oscillator.frequency.value = 660;
-    oscillator.connect(gainNode);
-    oscillator.start();
+      oscillator = audioCtx.createOscillator();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 660;
+      oscillator.connect(gainNode);
+      oscillator.start();
 
-    confirmGain = audioCtx.createGain();
-    confirmGain.gain.value = 0;
-    confirmGain.connect(audioCtx.destination);
+      confirmGain = audioCtx.createGain();
+      confirmGain.gain.value = 0;
+      confirmGain.connect(audioCtx.destination);
 
-    confirmOsc = audioCtx.createOscillator();
-    confirmOsc.type = 'triangle';
-    confirmOsc.frequency.value = 1000;
-    confirmOsc.connect(confirmGain);
-    confirmOsc.start();
+      confirmOsc = audioCtx.createOscillator();
+      confirmOsc.type = 'triangle';
+      confirmOsc.frequency.value = 1000;
+      confirmOsc.connect(confirmGain);
+      confirmOsc.start();
+    } catch (e) {
+      console.error('Failed to initialize AudioContext:', e);
+    }
   }
 
   function unlockAudio() {
+    if (!sessionActive) return;
     if (audioUnlocked && audioCtx && audioCtx.state === 'running') return;
+    
     initAudio();
+    if (!audioCtx) return;
+
     audioCtx.resume().then(() => {
       audioUnlocked = true;
     }).catch((err) => {
       audioUnlocked = false;
+      console.warn('AudioContext resume failed:', err);
     });
   }
 
@@ -299,7 +307,6 @@
   chrome.storage.local.get(['sessionActive'], (data) => {
     if (data.sessionActive) {
       sessionActive = true;
-      unlockAudio();
       createVisualCursor();
       updateInteractiveElementsCache();
     }
@@ -1162,16 +1169,14 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'INFERENCE_RESULT') {
       latestResult = msg.data;
-      unlockAudio();
       updateLocalBeacon(msg.data);
     }
 
     if (msg.type === 'SESSION_STARTED' || msg.type === 'START_SESSION') {
       sessionActive = true;
-      unlockAudio();
       createVisualCursor();
       updateInteractiveElementsCache();
-      speakText('ScreenStream active. Move your mouse to explore the page.', true);
+      speakText('ScreenStream active. Click anywhere on the page to enable audio beacons.', true);
     }
 
     if (msg.type === 'PAGE_DESCRIPTION') {
