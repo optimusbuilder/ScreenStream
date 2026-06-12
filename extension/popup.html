@@ -144,6 +144,13 @@
     }
 
     .element-preview.visible { display: block; }
+
+    .hint {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -157,6 +164,7 @@
 
   <button class="btn btn-start" id="startBtn">Start Session</button>
   <button class="btn btn-stop" id="stopBtn" style="display:none;">Stop Session</button>
+  <p class="hint" id="captureHint">Chrome will ask to share this tab — click <strong>Allow</strong>.</p>
 
   <div class="toggle-row">
     <span>Spoken labels</span>

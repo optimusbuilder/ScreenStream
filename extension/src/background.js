@@ -11,7 +11,7 @@ let captureReadyResolver = null;
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
     case 'START_SESSION':
-      handleStartSession(sendResponse);
+      handleStartSession(msg, sendResponse);
       return true;
 
     case 'STOP_SESSION':
@@ -49,20 +49,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function handleStartSession(sendResponse) {
+async function handleStartSession(msg, sendResponse) {
   if (session) {
     sendResponse({ success: true });
     return;
   }
 
   try {
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!activeTab?.id) throw new Error('No active tab found');
-    if (!activeTab.url || activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
+    const tabId = msg.tabId;
+    const mediaStreamId = msg.mediaStreamId;
+
+    if (!tabId || !mediaStreamId) {
+      throw new Error('Tab capture permission is required. Click Start again and allow sharing.');
+    }
+
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab?.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
       throw new Error('Open a regular website first (not a Chrome internal page)');
     }
 
-    contentTabId = activeTab.id;
+    contentTabId = tabId;
 
     try {
       await chrome.scripting.executeScript({
@@ -88,7 +94,7 @@ async function handleStartSession(sendResponse) {
     };
 
     startKeepalive();
-    await createOffscreenAndCapture(activeTab);
+    await createOffscreenAndCapture(mediaStreamId);
     await waitForVideoFrames();
     await notifyContentSessionStarted();
     startInferenceLoop();
@@ -129,7 +135,7 @@ function waitForCaptureReady(timeoutMs = 15000) {
   });
 }
 
-async function createOffscreenAndCapture(tab) {
+async function createOffscreenAndCapture(mediaStreamId) {
   const existingContexts = await chrome.runtime.getContexts({
     contextTypes: ['OFFSCREEN_DOCUMENT'],
   });
@@ -149,10 +155,6 @@ async function createOffscreenAndCapture(tab) {
   await offscreenReady;
 
   const captureReady = waitForCaptureReady();
-
-  const mediaStreamId = await chrome.tabCapture.getMediaStreamId({
-    targetTabId: tab.id,
-  });
 
   chrome.runtime.sendMessage({
     type: 'START_CAPTURE',
