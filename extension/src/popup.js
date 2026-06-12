@@ -32,7 +32,7 @@ function setSessionUI(active) {
 function friendlyError(err) {
   const msg = err?.message || String(err);
   if (msg.includes('Permission dismissed') || msg.includes('NotAllowedError')) {
-    return 'Tab capture was blocked. Click Start again and choose Allow when Chrome asks to share the tab.';
+    return 'Tab capture failed. Click the page you want to navigate, then open this popup and click Start again immediately.';
   }
   if (msg.includes('Cannot capture')) {
     return 'Cannot capture this page. Try a normal website like google.com.';
@@ -42,26 +42,18 @@ function friendlyError(err) {
 
 startBtn.addEventListener('click', async () => {
   startBtn.disabled = true;
-  setStatus('connecting', 'Allow tab sharing when prompted...');
+  setStatus('connecting', 'Starting capture...');
 
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id) throw new Error('No active tab found');
     if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
       throw new Error('Open a regular website first (not a Chrome internal page)');
     }
 
-    // Must request capture here while the popup click is still a valid user gesture.
-    const mediaStreamId = await chrome.tabCapture.getMediaStreamId({
-      targetTabId: tab.id,
-    });
-
-    setStatus('connecting', 'Connecting...');
-
     chrome.runtime.sendMessage({
       type: 'START_SESSION',
       tabId: tab.id,
-      mediaStreamId,
     }, (response) => {
       startBtn.disabled = false;
 
@@ -75,8 +67,8 @@ startBtn.addEventListener('click', async () => {
         setStatus('active', 'Streaming');
         setSessionUI(true);
       } else {
-        setStatus('error', response?.error || 'Failed to start');
-        setTimeout(() => setStatus('idle', 'Idle'), 4000);
+        setStatus('error', friendlyError({ message: response?.error }) || 'Failed to start');
+        setTimeout(() => setStatus('idle', 'Idle'), 5000);
       }
     });
   } catch (err) {

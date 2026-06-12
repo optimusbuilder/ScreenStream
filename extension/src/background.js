@@ -6,6 +6,7 @@ let inferenceTimer = null;
 let latestMouse = { x: 0, y: 0 };
 let contentTabId = null;
 let offscreenReadyResolver = null;
+let mediaAcquiredResolver = null;
 let captureReadyResolver = null;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -33,6 +34,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       return false;
 
+    case 'MEDIA_ACQUIRED':
+      if (mediaAcquiredResolver) {
+        mediaAcquiredResolver();
+        mediaAcquiredResolver = null;
+      }
+      return false;
+
     case 'CAPTURE_READY':
       console.log('[bg] Capture is publishing to LiveKit');
       if (captureReadyResolver) {
@@ -57,11 +65,7 @@ async function handleStartSession(msg, sendResponse) {
 
   try {
     const tabId = msg.tabId;
-    const mediaStreamId = msg.mediaStreamId;
-
-    if (!tabId || !mediaStreamId) {
-      throw new Error('Tab capture permission is required. Click Start again and allow sharing.');
-    }
+    if (!tabId) throw new Error('No tab selected for capture');
 
     const tab = await chrome.tabs.get(tabId);
     if (!tab?.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
@@ -79,6 +83,16 @@ async function handleStartSession(msg, sendResponse) {
       // Content script may already be injected via manifest.
     }
 
+    // Prepare offscreen doc, then grab tab media immediately while the popup click
+    // gesture is still valid — tabCapture does not show a share dialog.
+    await ensureOffscreenReady();
+
+    const mediaStreamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: tabId,
+    });
+
+    await acquireTabMedia(mediaStreamId);
+
     const res = await fetch(`${SERVER_URL}/api/session/init`, { method: 'POST' });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -94,7 +108,7 @@ async function handleStartSession(msg, sendResponse) {
     };
 
     startKeepalive();
-    await createOffscreenAndCapture(mediaStreamId);
+    await publishToLivekit(session.livekitUrl, session.livekitToken);
     await waitForVideoFrames();
     await notifyContentSessionStarted();
     startInferenceLoop();
@@ -121,11 +135,25 @@ function waitForOffscreenReady(timeoutMs = 5000) {
   });
 }
 
+function waitForMediaAcquired(timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      mediaAcquiredResolver = null;
+      reject(new Error('Tab capture timed out'));
+    }, timeoutMs);
+
+    mediaAcquiredResolver = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+}
+
 function waitForCaptureReady(timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       captureReadyResolver = null;
-      reject(new Error('Tab capture timed out'));
+      reject(new Error('LiveKit publish timed out'));
     }, timeoutMs);
 
     captureReadyResolver = () => {
@@ -135,7 +163,7 @@ function waitForCaptureReady(timeoutMs = 15000) {
   });
 }
 
-async function createOffscreenAndCapture(mediaStreamId) {
+async function ensureOffscreenReady() {
   const existingContexts = await chrome.runtime.getContexts({
     contextTypes: ['OFFSCREEN_DOCUMENT'],
   });
@@ -153,14 +181,26 @@ async function createOffscreenAndCapture(mediaStreamId) {
   }
 
   await offscreenReady;
+}
 
+async function acquireTabMedia(mediaStreamId) {
+  const mediaAcquired = waitForMediaAcquired();
+
+  chrome.runtime.sendMessage({
+    type: 'ACQUIRE_TAB_MEDIA',
+    mediaStreamId,
+  });
+
+  await mediaAcquired;
+}
+
+async function publishToLivekit(livekitUrl, livekitToken) {
   const captureReady = waitForCaptureReady();
 
   chrome.runtime.sendMessage({
-    type: 'START_CAPTURE',
-    mediaStreamId,
-    livekitUrl: session.livekitUrl,
-    livekitToken: session.livekitToken,
+    type: 'PUBLISH_TO_LIVEKIT',
+    livekitUrl,
+    livekitToken,
   });
 
   await captureReady;
@@ -254,6 +294,7 @@ async function handleStopSession() {
   keepaliveTimer = null;
   inferenceTimer = null;
   offscreenReadyResolver = null;
+  mediaAcquiredResolver = null;
   captureReadyResolver = null;
 
   if (session) {
