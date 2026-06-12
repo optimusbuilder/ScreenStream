@@ -2,7 +2,8 @@ const SERVER_URL = 'http://localhost:3000';
 
 let session = null;
 let keepaliveTimer = null;
-let inferenceTimer = null;
+let inferenceRunning = false;
+let inferenceAbort = null;
 let latestMouse = { x: 0, y: 0 };
 let contentTabId = null;
 let offscreenReadyResolver = null;
@@ -133,6 +134,10 @@ async function startSessionFromTab(tab) {
   await publishToLivekit(session.livekitUrl, session.livekitToken);
   await waitForVideoFrames();
   await notifyContentSessionStarted();
+
+  // Fire initial page description for blind user orientation
+  requestPageDescription();
+
   startInferenceLoop();
 }
 
@@ -267,7 +272,43 @@ async function notifyContentSessionStarted() {
   await chrome.storage.local.set({ sessionActive: true });
 }
 
+// Fire a one-shot page description for initial blind user orientation
+async function requestPageDescription() {
+  if (!session) return;
+
+  try {
+    const res = await fetch(`${SERVER_URL}/api/inference/describe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streamId: session.streamId }),
+    });
+
+    if (!res.ok) {
+      console.warn('[bg] Page description failed:', res.status);
+      return;
+    }
+
+    const data = await res.json();
+
+    if (contentTabId && data.description) {
+      chrome.tabs.sendMessage(contentTabId, {
+        type: 'PAGE_DESCRIPTION',
+        description: data.description,
+      }).catch(() => {});
+    }
+
+    // Also relay to popup
+    chrome.runtime.sendMessage({
+      type: 'PAGE_DESCRIPTION',
+      description: data.description,
+    }).catch(() => {});
+  } catch (err) {
+    console.warn('[bg] Page description error:', err.message);
+  }
+}
+
 function startKeepalive() {
+  // Overshoot docs: streams expire 5 min after last keepalive. Call every 60s for safety margin.
   keepaliveTimer = setInterval(async () => {
     if (!session) return;
 
@@ -287,58 +328,90 @@ function startKeepalive() {
     } catch (err) {
       console.error('[bg] Keepalive error:', err);
     }
-  }, 90_000);
+  }, 60_000);
 }
 
+// Sequential inference loop — waits for previous request to complete before starting next.
+// No stampede of concurrent requests on slow responses.
 function startInferenceLoop() {
-  if (inferenceTimer) return;
+  if (inferenceRunning) return;
+  inferenceRunning = true;
+  inferenceAbort = new AbortController();
 
-  inferenceTimer = setInterval(async () => {
-    if (!session) return;
+  const NORMAL_DELAY = 750;
+  const MAX_BACKOFF = 8000;
+  let consecutiveFailures = 0;
 
-    try {
-      const res = await fetch(`${SERVER_URL}/api/inference`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          streamId: session.streamId,
-          mouseX: latestMouse.x,
-          mouseY: latestMouse.y,
-        }),
-      });
+  (async () => {
+    while (inferenceRunning && session && !inferenceAbort.signal.aborted) {
+      const delay = consecutiveFailures > 0
+        ? Math.min(NORMAL_DELAY * Math.pow(2, consecutiveFailures), MAX_BACKOFF)
+        : NORMAL_DELAY;
 
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        if (res.status !== 409) {
-          console.warn('[bg] Inference failed:', body.error || res.status);
+      await new Promise((r) => setTimeout(r, delay));
+
+      if (!session || !inferenceRunning) break;
+
+      try {
+        const res = await fetch(`${SERVER_URL}/api/inference`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            streamId: session.streamId,
+            mouseX: latestMouse.x,
+            mouseY: latestMouse.y,
+          }),
+        });
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          if (res.status === 409) {
+            // Already in-flight — this is fine, just wait
+            continue;
+          }
+          consecutiveFailures++;
+          if (consecutiveFailures <= 3) {
+            console.warn(`[bg] Inference failed (${res.status}): ${body.error || 'unknown'} — backoff ${consecutiveFailures}`);
+          }
+          continue;
         }
-        return;
-      }
 
-      const result = await res.json();
+        consecutiveFailures = 0;
+        const result = await res.json();
 
-      if (contentTabId) {
-        chrome.tabs.sendMessage(contentTabId, {
+        if (contentTabId) {
+          chrome.tabs.sendMessage(contentTabId, {
+            type: 'INFERENCE_RESULT',
+            data: result,
+          }).catch(() => {});
+        }
+
+        chrome.runtime.sendMessage({
           type: 'INFERENCE_RESULT',
           data: result,
         }).catch(() => {});
+      } catch (err) {
+        consecutiveFailures++;
+        if (consecutiveFailures <= 3) {
+          console.error('[bg] Inference error:', err.message);
+        }
       }
-
-      chrome.runtime.sendMessage({
-        type: 'INFERENCE_RESULT',
-        data: result,
-      }).catch(() => {});
-    } catch (err) {
-      console.error('[bg] Inference error:', err.message);
     }
-  }, 750);
+  })();
+}
+
+function stopInferenceLoop() {
+  inferenceRunning = false;
+  if (inferenceAbort) {
+    inferenceAbort.abort();
+    inferenceAbort = null;
+  }
 }
 
 async function handleStopSession() {
   clearInterval(keepaliveTimer);
-  clearInterval(inferenceTimer);
   keepaliveTimer = null;
-  inferenceTimer = null;
+  stopInferenceLoop();
   offscreenReadyResolver = null;
   mediaAcquiredResolver = null;
   captureReadyResolver = null;
