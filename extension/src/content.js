@@ -578,6 +578,15 @@
     }, (response) => {
       if (response && response.success && response.description) {
         speakText("Visual details: " + response.description, true);
+        chrome.runtime.sendMessage({
+          type: 'INFERENCE_RESULT',
+          data: {
+            element_under_cursor: response.description,
+            interactive: false,
+            nearest_actionable_direction: 'ON_OBJECT',
+            distance_pixels: 0,
+          }
+        }).catch(() => {});
       } else {
         console.error('VLM Lens error:', response?.error);
         speakText('Visual analysis failed.', true);
@@ -967,6 +976,16 @@
 
     if (currentTargetCoord) {
       updateNavigationBeacon();
+      const dist = Math.round(Math.sqrt((currentTargetCoord.x - e.clientX) ** 2 + (currentTargetCoord.y - e.clientY) ** 2));
+      chrome.runtime.sendMessage({
+        type: 'INFERENCE_RESULT',
+        data: {
+          element_under_cursor: `Guidance target: ${currentTargetCoord.name}`,
+          interactive: true,
+          nearest_actionable_direction: 'TARGET',
+          distance_pixels: dist,
+        }
+      }).catch(() => {});
     } else {
       const result = findNearestInteractive(e.clientX, e.clientY);
       if (result) {
@@ -976,6 +995,16 @@
         if (result.element_under_cursor !== lastSpokenElement) {
           announceResult(result);
         }
+
+        chrome.runtime.sendMessage({
+          type: 'INFERENCE_RESULT',
+          data: {
+            element_under_cursor: result.element_under_cursor,
+            interactive: result.interactive,
+            nearest_actionable_direction: result.nearest_actionable_direction,
+            distance_pixels: Math.round(result.distance_pixels),
+          }
+        }).catch(() => {});
       }
     }
 
