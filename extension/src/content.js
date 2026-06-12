@@ -345,13 +345,11 @@
         }
       }
 
-      if (tickInterval) clearInterval(tickInterval);
-      tickInterval = setInterval(() => {
-        const now = audioCtx.currentTime;
-        oscillator.frequency.setValueAtTime(interactive ? 880 : 660, now);
-        gainNode.gain.setTargetAtTime(0.15, now, 0.01);
-        gainNode.gain.setTargetAtTime(0, now + 0.03, 0.02);
-      }, 400);
+      if (tickInterval) {
+        clearInterval(tickInterval);
+        tickInterval = null;
+      }
+      gainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.01);
 
       lastBeaconElement = element;
       return;
@@ -471,8 +469,8 @@
       }
       
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.2;
-      utterance.volume = 0.9;
+      utterance.rate = 1.3; // Speed up speech synthesis slightly (1.3 is very readable)
+      utterance.volume = 0.95;
       
       activeUtterance = utterance;
       
@@ -491,7 +489,10 @@
         window.speechSynthesis.resume();
       }
       
-      window.speechSynthesis.speak(utterance);
+      // Wrap in a short timeout to let Chrome cancel complete before speaking
+      setTimeout(() => {
+        window.speechSynthesis.speak(utterance);
+      }, 15);
     } catch (e) {
       console.error('Speech synthesis error:', e);
     }
@@ -616,6 +617,7 @@
       window.speechSynthesis.cancel();
       
       activeAudio = new Audio("data:audio/mp3;base64," + base64Data);
+      activeAudio.playbackRate = 1.18; // Speed up ElevenLabs speech synthesis playback rate!
       
       if (onEndCallback) {
         activeAudio.onended = () => {
