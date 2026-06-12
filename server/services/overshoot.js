@@ -1,6 +1,14 @@
 const BASE_URL = process.env.OVERSHOOT_BASE_URL || 'https://api.overshoot.ai/v1';
 const API_KEY = () => process.env.OVERSHOOT_API_KEY;
-const MODEL = () => process.env.OVERSHOOT_MODEL || 'google/gemma-4-E2B-it';
+const MODEL = () => process.env.OVERSHOOT_MODEL || 'google/gemma-4-26B-A4B-it';
+
+function formatErrorBody(body) {
+  if (!body) return 'Unknown error';
+  if (typeof body.detail === 'string') return body.detail;
+  if (body.detail?.error?.message) return body.detail.error.message;
+  if (body.message) return typeof body.message === 'string' ? body.message : JSON.stringify(body.message);
+  return JSON.stringify(body);
+}
 
 function headers() {
   return {
@@ -17,7 +25,7 @@ async function createStream() {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, body.detail || 'Failed to create stream');
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Failed to create stream');
   }
 
   return res.json();
@@ -31,7 +39,7 @@ async function keepalive(streamId) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, body.detail || 'Keepalive failed');
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Keepalive failed');
   }
 
   return res.json();
@@ -47,7 +55,7 @@ async function deleteStream(streamId) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, body.detail || 'Delete failed');
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Delete failed');
   }
 
   return { deleted: true };
@@ -61,7 +69,7 @@ async function getStreamStatus(streamId) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, body.detail || 'Failed to get stream status');
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Failed to get stream status');
   }
 
   return res.json();
@@ -117,7 +125,7 @@ async function infer(streamId, mouseX, mouseY) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, body.detail || body.message || 'Inference failed');
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Inference failed');
   }
 
   const completion = await res.json();
@@ -128,6 +136,20 @@ async function infer(streamId, mouseX, mouseY) {
   }
 
   return JSON.parse(raw);
+}
+
+async function waitForFrames(streamId, { timeoutMs = 15000, pollMs = 500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const status = await getStreamStatus(streamId);
+    if (status.last_frame_at_ms != null) {
+      return status;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+
+  throw new OvershotError(408, 'Timed out waiting for first video frame');
 }
 
 async function listModels() {
@@ -155,6 +177,7 @@ module.exports = {
   keepalive,
   deleteStream,
   getStreamStatus,
+  waitForFrames,
   infer,
   listModels,
   OvershotError,

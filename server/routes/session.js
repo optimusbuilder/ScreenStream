@@ -46,6 +46,16 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+router.get('/:id/wait-for-frames', async (req, res) => {
+  try {
+    const status = await overshoot.waitForFrames(req.params.id);
+    res.json(status);
+  } catch (err) {
+    console.error('[session/wait-for-frames]', err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 router.get('/:id/status', async (req, res) => {
   try {
     const status = await overshoot.getStreamStatus(req.params.id);

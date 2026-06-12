@@ -14,7 +14,7 @@ router.post('/', async (req, res) => {
     const result = await overshoot.infer(streamId, mouseX, mouseY);
     res.json(result);
   } catch (err) {
-    console.error('[inference]', err.message);
+    console.error('[inference]', err.status || 500, err.message);
     res.status(err.status || 500).json({ error: err.message });
   }
 });

@@ -3,6 +3,8 @@ import { Room, RoomEvent, Track } from 'livekit-client';
 let room = null;
 let mediaStream = null;
 
+chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' }).catch(() => {});
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'START_CAPTURE') {
     startCapture(msg.mediaStreamId, msg.livekitUrl, msg.livekitToken);
@@ -18,13 +20,11 @@ async function startCapture(mediaStreamId, livekitUrl, livekitToken) {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
-        mandatory: {
-          chromeMediaSource: 'tab',
-          chromeMediaSourceId: mediaStreamId,
-          maxWidth: 854,
-          maxHeight: 480,
-          maxFrameRate: 15,
-        },
+        chromeMediaSource: 'tab',
+        chromeMediaSourceId: mediaStreamId,
+        maxWidth: 854,
+        maxHeight: 480,
+        maxFrameRate: 15,
       },
     });
 

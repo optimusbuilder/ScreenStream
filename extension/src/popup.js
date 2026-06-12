@@ -29,7 +29,7 @@ function setSessionUI(active) {
 
 startBtn.addEventListener('click', () => {
   startBtn.disabled = true;
-  setStatus('connecting', 'Connecting...');
+  setStatus('connecting', 'Connecting (capturing tab)...');
 
   chrome.runtime.sendMessage({ type: 'START_SESSION' }, (response) => {
     startBtn.disabled = false;

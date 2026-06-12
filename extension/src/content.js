@@ -66,9 +66,15 @@
   function unlockAudio() {
     if (audioUnlocked) return;
     initAudio();
-    audioCtx.resume();
+    audioCtx.resume().catch(() => {});
     audioUnlocked = true;
   }
+
+  chrome.storage.local.get(['sessionActive'], (data) => {
+    if (data.sessionActive) {
+      unlockAudio();
+    }
+  });
 
   function stopAudio() {
     if (tickInterval) {
@@ -172,6 +178,7 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'INFERENCE_RESULT') {
       latestResult = msg.data;
+      unlockAudio();
       updateBeacon(msg.data);
       if (mouseStopped) {
         maybeAnnounce();
