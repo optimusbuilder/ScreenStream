@@ -1,6 +1,14 @@
 const BASE_URL = process.env.OVERSHOOT_BASE_URL || 'https://api.overshoot.ai/v1';
 const API_KEY = () => process.env.OVERSHOOT_API_KEY;
-const MODEL = () => process.env.OVERSHOOT_MODEL || 'google/gemma-4-26B-A4B-it';
+const MODEL = () => process.env.OVERSHOOT_MODEL || 'Qwen/Qwen3.6-27B-FP8';
+
+// Hosted models on Overshoot's fast path — sub-second TTFT.
+const FALLBACK_MODELS = [
+  'Qwen/Qwen3.6-27B-FP8',
+  'google/gemma-4-26B-A4B-it',
+  'Qwen/Qwen3.6-35B-A3B-FP8',
+  'google/gemma-4-31B-it',
+];
 
 function formatErrorBody(body) {
   if (!body) return 'Unknown error';
@@ -17,11 +25,56 @@ function headers() {
   };
 }
 
+// ---- Fetch with timeout + retry ----
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchWithRetry(url, options = {}, { timeoutMs = 15000, retries = 3, backoffMs = [500, 1000, 2000] } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, options, timeoutMs);
+
+      // Don't retry client errors (4xx) except 429
+      if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) {
+        return res;
+      }
+
+      // Retry on 503 / 429 / 5xx
+      const body = await res.json().catch(() => ({}));
+      lastError = new OvershotError(res.status, formatErrorBody(body) || `HTTP ${res.status}`);
+      console.warn(`[overshoot] Attempt ${attempt + 1}/${retries} failed: ${res.status} — retrying in ${backoffMs[attempt] || 2000}ms`);
+    } catch (err) {
+      lastError = err.name === 'AbortError'
+        ? new OvershotError(504, 'Request timed out')
+        : new OvershotError(502, err.message || 'Network error');
+      console.warn(`[overshoot] Attempt ${attempt + 1}/${retries} failed: ${lastError.message} — retrying`);
+    }
+
+    if (attempt < retries - 1) {
+      await new Promise((r) => setTimeout(r, backoffMs[attempt] || 2000));
+    }
+  }
+  throw lastError;
+}
+
+// ---- Stream lifecycle ----
+
 async function createStream() {
-  const res = await fetch(`${BASE_URL}/streams`, {
+  const res = await fetchWithRetry(`${BASE_URL}/streams`, {
     method: 'POST',
     headers: headers(),
-  });
+  }, { retries: 3, backoffMs: [1000, 2000, 4000] });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -32,10 +85,10 @@ async function createStream() {
 }
 
 async function keepalive(streamId) {
-  const res = await fetch(`${BASE_URL}/streams/${streamId}/keepalive`, {
+  const res = await fetchWithRetry(`${BASE_URL}/streams/${streamId}/keepalive`, {
     method: 'POST',
     headers: headers(),
-  });
+  }, { retries: 3, backoffMs: [1000, 1000, 1000] });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -46,10 +99,10 @@ async function keepalive(streamId) {
 }
 
 async function deleteStream(streamId) {
-  const res = await fetch(`${BASE_URL}/streams/${streamId}`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/streams/${streamId}`, {
     method: 'DELETE',
     headers: headers(),
-  });
+  }, 10000);
 
   if (res.status === 404) return { deleted: true };
 
@@ -62,10 +115,10 @@ async function deleteStream(streamId) {
 }
 
 async function getStreamStatus(streamId) {
-  const res = await fetch(`${BASE_URL}/streams/${streamId}`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/streams/${streamId}`, {
     method: 'GET',
     headers: headers(),
-  });
+  }, 10000);
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -74,6 +127,8 @@ async function getStreamStatus(streamId) {
 
   return res.json();
 }
+
+// ---- Inference ----
 
 const OUTPUT_SCHEMA = {
   type: 'object',
@@ -92,7 +147,79 @@ const OUTPUT_SCHEMA = {
 async function infer(streamId, mouseX, mouseY) {
   const prompt = `You are an instantaneous web accessibility navigator. The user is hovering their mouse at current viewport coordinates: X=${mouseX}, Y=${mouseY}. Analyze the current live tab frame. Determine exactly what visual or functional interface element is located directly beneath or nearest to those coordinates. Output strict JSON matching the schema format.`;
 
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
+  const models = [MODEL(), ...FALLBACK_MODELS.filter((m) => m !== MODEL())];
+
+  let lastError;
+  for (const model of models) {
+    try {
+      const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `ovs://streams/${streamId}?frame_index=-1`,
+                  },
+                },
+              ],
+            },
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'spatial_nav',
+              strict: true,
+              schema: OUTPUT_SCHEMA,
+            },
+          },
+          max_tokens: 150,
+        }),
+      }, { timeoutMs: 12000, retries: 2, backoffMs: [500, 1000] });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        lastError = new OvershotError(res.status, formatErrorBody(body) || 'Inference failed');
+        if (res.status === 503) {
+          console.warn(`[overshoot] Model ${model} returned 503, trying next model`);
+          continue;
+        }
+        throw lastError;
+      }
+
+      const completion = await res.json();
+      const raw = completion.choices?.[0]?.message?.content;
+
+      if (!raw) {
+        throw new OvershotError(500, 'Empty completion response');
+      }
+
+      return JSON.parse(raw);
+    } catch (err) {
+      lastError = err;
+      if (err.status === 503 || err.status === 504 || err.status === 502) {
+        console.warn(`[overshoot] Model ${model} failed (${err.status}), trying next`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new OvershotError(503, 'All models failed');
+}
+
+// ---- Page description for initial orientation ----
+
+async function describePage(streamId) {
+  const prompt = `You are a web accessibility assistant helping a blind user understand a web page. Describe the overall layout of this web page concisely. List the main sections, navigation areas, and key interactive elements from top to bottom. Be brief — 2 to 3 sentences maximum. Start with the page title or site name if visible.`;
+
+  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({
@@ -111,34 +238,28 @@ async function infer(streamId, mouseX, mouseY) {
           ],
         },
       ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'spatial_nav',
-          strict: true,
-          schema: OUTPUT_SCHEMA,
-        },
-      },
-      max_tokens: 150,
+      max_tokens: 200,
     }),
-  });
+  }, { timeoutMs: 15000, retries: 2, backoffMs: [1000, 2000] });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, formatErrorBody(body) || 'Inference failed');
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Describe failed');
   }
 
   const completion = await res.json();
   const raw = completion.choices?.[0]?.message?.content;
 
   if (!raw) {
-    throw new OvershotError(500, 'Empty completion response');
+    throw new OvershotError(500, 'Empty description response');
   }
 
-  return JSON.parse(raw);
+  return raw;
 }
 
-async function waitForFrames(streamId, { timeoutMs = 15000, pollMs = 500 } = {}) {
+// ---- Frame waiting ----
+
+async function waitForFrames(streamId, { timeoutMs = 30000, pollMs = 500 } = {}) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -153,9 +274,9 @@ async function waitForFrames(streamId, { timeoutMs = 15000, pollMs = 500 } = {})
 }
 
 async function listModels() {
-  const res = await fetch(`${BASE_URL}/models`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/models`, {
     method: 'GET',
-  });
+  }, 10000);
 
   if (!res.ok) {
     throw new OvershotError(res.status, 'Failed to list models');
@@ -179,6 +300,7 @@ module.exports = {
   getStreamStatus,
   waitForFrames,
   infer,
+  describePage,
   listModels,
   OvershotError,
 };
