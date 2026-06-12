@@ -7,8 +7,10 @@ let videoTrack = null;
 chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' }).catch(() => {});
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'ACQUIRE_TAB_MEDIA') {
-    acquireTabMedia(msg.mediaStreamId);
+  if (msg.target && msg.target !== 'offscreen') return;
+
+  if (msg.type === 'start-recording') {
+    acquireTabMedia(msg.data);
   }
 
   if (msg.type === 'PUBLISH_TO_LIVEKIT') {
@@ -24,14 +26,17 @@ async function acquireTabMedia(mediaStreamId) {
   try {
     stopCapture();
 
+    // Chrome docs format — mandatory constraints required for tab capture in offscreen
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
-        chromeMediaSource: 'tab',
-        chromeMediaSourceId: mediaStreamId,
-        maxWidth: 854,
-        maxHeight: 480,
-        maxFrameRate: 15,
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: mediaStreamId,
+          maxWidth: 854,
+          maxHeight: 480,
+          maxFrameRate: 15,
+        },
       },
     });
 
@@ -42,7 +47,10 @@ async function acquireTabMedia(mediaStreamId) {
     chrome.runtime.sendMessage({ type: 'MEDIA_ACQUIRED' });
   } catch (err) {
     console.error('[offscreen] Tab media failed:', err);
-    chrome.runtime.sendMessage({ type: 'CAPTURE_ERROR', error: err.message });
+    chrome.runtime.sendMessage({
+      type: 'CAPTURE_ERROR',
+      error: err.message || String(err),
+    });
   }
 }
 

@@ -47,14 +47,8 @@
     }
 
     .status-dot.idle { background: #555; }
-    .status-dot.connecting { background: #f5a623; animation: pulse 1s infinite; }
     .status-dot.active { background: #4cd964; }
     .status-dot.error { background: #ff3b30; }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
 
     .btn {
       width: 100%;
@@ -68,13 +62,6 @@
     }
 
     .btn:hover { opacity: 0.85; }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    .btn-start {
-      background: #4cd964;
-      color: #000;
-      margin-bottom: 8px;
-    }
 
     .btn-stop {
       background: #ff3b30;
@@ -140,10 +127,7 @@
       font-family: 'SF Mono', 'Fira Code', monospace;
       color: #aaa;
       min-height: 40px;
-      display: none;
     }
-
-    .element-preview.visible { display: block; }
 
     .hint {
       font-size: 11px;
@@ -155,16 +139,16 @@
 </head>
 <body>
   <h1>ScreenStream-Access</h1>
-  <p class="subtitle">Spatial audio navigator</p>
+  <p class="subtitle">Session controls</p>
 
   <div class="status-row">
-    <span class="status-dot idle" id="statusDot"></span>
-    <span id="statusText">Idle</span>
+    <span class="status-dot active" id="statusDot"></span>
+    <span id="statusText">Streaming</span>
   </div>
 
-  <button class="btn btn-start" id="startBtn">Start Session</button>
-  <button class="btn btn-stop" id="stopBtn" style="display:none;">Stop Session</button>
-  <p class="hint" id="captureHint">Keep the website tab active, then click Start. Chrome usually captures silently — look for a blue "Sharing this tab" badge.</p>
+  <p class="hint">Move your mouse on the page to hear spatial audio. Pause on elements for spoken labels.</p>
+
+  <button class="btn btn-stop" id="stopBtn">Stop Session</button>
 
   <div class="toggle-row">
     <span>Spoken labels</span>
@@ -174,7 +158,7 @@
     </label>
   </div>
 
-  <div class="element-preview" id="elementPreview"></div>
+  <div class="element-preview" id="elementPreview">Waiting for inference…</div>
 
   <script src="src/popup.js"></script>
 </body>

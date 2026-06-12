@@ -9,12 +9,34 @@ let offscreenReadyResolver = null;
 let mediaAcquiredResolver = null;
 let captureReadyResolver = null;
 
+// Chrome requires tabCapture from a direct icon click — popup buttons break the gesture chain.
+chrome.action.onClicked.addListener(async (tab) => {
+  if (session) return;
+
+  try {
+    await chrome.action.setBadgeText({ text: '…' });
+    await startSessionFromTab(tab);
+    await chrome.action.setPopup({ popup: 'popup.html' });
+    chrome.action.setBadgeText({ text: 'ON' });
+    chrome.action.setBadgeBackgroundColor({ color: '#4cd964' });
+  } catch (err) {
+    console.error('[bg] Icon click start failed:', err);
+    chrome.action.setBadgeText({ text: '!' });
+    broadcastError(err.message);
+    setTimeout(() => chrome.action.setBadgeText({ text: '' }), 4000);
+  }
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  ensureOffscreenReady().catch(() => {});
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  ensureOffscreenReady().catch(() => {});
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
-    case 'START_SESSION':
-      handleStartSession(msg, sendResponse);
-      return true;
-
     case 'STOP_SESSION':
       handleStopSession().then(() => sendResponse({ success: true }));
       return true;
@@ -57,68 +79,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function handleStartSession(msg, sendResponse) {
-  if (session) {
-    sendResponse({ success: true });
-    return;
+async function startSessionFromTab(tab) {
+  if (session) return;
+
+  if (!tab?.id) throw new Error('No active tab found');
+  if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+    throw new Error('Open a regular website (e.g. google.com), then click the extension icon.');
   }
+
+  contentTabId = tab.id;
 
   try {
-    const tabId = msg.tabId;
-    if (!tabId) throw new Error('No tab selected for capture');
-
-    const tab = await chrome.tabs.get(tabId);
-    if (!tab?.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
-      throw new Error('Open a regular website first (not a Chrome internal page)');
-    }
-
-    contentTabId = tabId;
-
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: contentTabId },
-        files: ['src/content.js'],
-      });
-    } catch {
-      // Content script may already be injected via manifest.
-    }
-
-    // Prepare offscreen doc, then grab tab media immediately while the popup click
-    // gesture is still valid — tabCapture does not show a share dialog.
-    await ensureOffscreenReady();
-
-    const mediaStreamId = await chrome.tabCapture.getMediaStreamId({
-      targetTabId: tabId,
+    await chrome.scripting.executeScript({
+      target: { tabId: contentTabId },
+      files: ['src/content.js'],
     });
-
-    await acquireTabMedia(mediaStreamId);
-
-    const res = await fetch(`${SERVER_URL}/api/session/init`, { method: 'POST' });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || `Server returned ${res.status}`);
-    }
-
-    const data = await res.json();
-    session = {
-      streamId: data.streamId,
-      livekitUrl: data.livekitUrl,
-      livekitToken: data.livekitToken,
-      expiresAt: data.expiresAt,
-    };
-
-    startKeepalive();
-    await publishToLivekit(session.livekitUrl, session.livekitToken);
-    await waitForVideoFrames();
-    await notifyContentSessionStarted();
-    startInferenceLoop();
-
-    sendResponse({ success: true });
-  } catch (err) {
-    console.error('[bg] Start session failed:', err);
-    sendResponse({ success: false, error: err.message });
-    await handleStopSession();
+  } catch {
+    // Content script may already be injected via manifest.
   }
+
+  // Official Chrome order: offscreen ready → getMediaStreamId → offscreen getUserMedia
+  await ensureOffscreenReady();
+
+  const mediaStreamId = await chrome.tabCapture.getMediaStreamId({
+    targetTabId: tab.id,
+  });
+
+  await acquireTabMedia(mediaStreamId);
+
+  const res = await fetch(`${SERVER_URL}/api/session/init`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Server returned ${res.status}`);
+  }
+
+  const data = await res.json();
+  session = {
+    streamId: data.streamId,
+    livekitUrl: data.livekitUrl,
+    livekitToken: data.livekitToken,
+    expiresAt: data.expiresAt,
+  };
+
+  startKeepalive();
+  await publishToLivekit(session.livekitUrl, session.livekitToken);
+  await waitForVideoFrames();
+  await notifyContentSessionStarted();
+  startInferenceLoop();
 }
 
 function waitForOffscreenReady(timeoutMs = 5000) {
@@ -139,7 +146,7 @@ function waitForMediaAcquired(timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       mediaAcquiredResolver = null;
-      reject(new Error('Tab capture timed out'));
+      reject(new Error('Tab capture timed out — click the extension icon on a website tab, not the popup Start button.'));
     }, timeoutMs);
 
     mediaAcquiredResolver = () => {
@@ -187,8 +194,9 @@ async function acquireTabMedia(mediaStreamId) {
   const mediaAcquired = waitForMediaAcquired();
 
   chrome.runtime.sendMessage({
-    type: 'ACQUIRE_TAB_MEDIA',
-    mediaStreamId,
+    type: 'start-recording',
+    target: 'offscreen',
+    data: mediaStreamId,
   });
 
   await mediaAcquired;
@@ -199,6 +207,7 @@ async function publishToLivekit(livekitUrl, livekitToken) {
 
   chrome.runtime.sendMessage({
     type: 'PUBLISH_TO_LIVEKIT',
+    target: 'offscreen',
     livekitUrl,
     livekitToken,
   });
@@ -310,7 +319,7 @@ async function handleStopSession() {
   session = null;
   await chrome.storage.local.set({ sessionActive: false });
 
-  chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'STOP_CAPTURE', target: 'offscreen' }).catch(() => {});
 
   try {
     const contexts = await chrome.runtime.getContexts({
@@ -327,6 +336,9 @@ async function handleStopSession() {
     chrome.tabs.sendMessage(contentTabId, { type: 'SESSION_STOPPED' }).catch(() => {});
     contentTabId = null;
   }
+
+  await chrome.action.setPopup({ popup: '' });
+  chrome.action.setBadgeText({ text: '' });
 }
 
 function broadcastError(error) {

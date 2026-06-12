@@ -20,8 +20,7 @@
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "ScreenStream-Access",
+    "default_title": "ScreenStream-Access — click to start on this tab",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png"
