@@ -66,4 +66,21 @@ router.post('/navigate', async (req, res) => {
   }
 });
 
+// On-demand element detailed visual description
+router.post('/visual-lens', async (req, res) => {
+  const { streamId, x, y } = req.body;
+
+  if (!streamId || x == null || y == null) {
+    return res.status(400).json({ error: 'streamId, x, and y are required' });
+  }
+
+  try {
+    const description = await overshoot.describeElement(streamId, x, y);
+    res.json({ description });
+  } catch (err) {
+    console.error('[inference/visual-lens]', err.status || 500, err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

@@ -299,6 +299,49 @@ async function navigate(streamId, query, width, height) {
   throw lastError || new OvershotError(503, 'All models failed navigation');
 }
 
+// ---- Describe Element (Visual Lens) ----
+
+async function describeElement(streamId, x, y) {
+  const prompt = `You are a web accessibility visual assistant. The user is hovering their mouse at coordinates X=${x}, Y=${y}. Analyze the live video stream frame and identify the image, chart, canvas, or visual element located at these coordinates. Describe the visual content in detail (e.g. if it is a photo, describe what is in the photo; if it is a chart, describe what it depicts and the trend/value). Be extremely descriptive but concise — keep your answer to exactly 1 or 2 sentences maximum.`;
+
+  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({
+      model: MODEL(),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `ovs://streams/${streamId}?frame_index=-1`,
+              },
+            },
+          ],
+        },
+      ],
+      max_tokens: 200,
+    }),
+  }, { timeoutMs: 15000, retries: 2, backoffMs: [1000, 2000] });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new OvershotError(res.status, formatErrorBody(body) || 'Describe element failed');
+  }
+
+  const completion = await res.json();
+  const raw = completion.choices?.[0]?.message?.content;
+
+  if (!raw) {
+    throw new OvershotError(500, 'Empty description response');
+  }
+
+  return raw;
+}
+
 // ---- Page description for initial orientation ----
 
 async function describePage(streamId) {
@@ -386,6 +429,7 @@ module.exports = {
   waitForFrames,
   infer,
   navigate,
+  describeElement,
   describePage,
   listModels,
   OvershotError,
