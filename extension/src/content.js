@@ -585,16 +585,12 @@
   function announceResult(result, force = false) {
     if (!speechEnabled) return;
 
-    const now = Date.now();
     const element = result.element_under_cursor;
 
     if (!force && element === lastSpokenElement) return;
 
-    const minInterval = mouseStopped ? IDLE_SPEECH_INTERVAL_MS : CONTINUOUS_SPEECH_INTERVAL_MS;
-    if (!force && now - lastSpeechTime < minInterval) return;
-
     lastSpokenElement = element;
-    lastSpeechTime = now;
+    lastSpeechTime = Date.now();
 
     const text = buildSpeechText(result);
     speakText(text, true);
