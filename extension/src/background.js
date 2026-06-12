@@ -92,6 +92,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch((err) => sendResponse({ success: false, error: err.message }));
       return true;
 
+    case 'VISUAL_LENS':
+      handleVisualLens(msg.x, msg.y)
+        .then((result) => sendResponse({ success: true, description: result.description }))
+        .catch((err) => sendResponse({ success: false, error: err.message }));
+      return true;
+
     case 'VLM_INFERENCE':
       handleVlmInference(msg.x, msg.y)
         .then((result) => sendResponse({ success: true, data: result }))
@@ -355,6 +361,27 @@ async function handleVlmInference(x, y) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Inference server error ${res.status}`);
+  }
+
+  return res.json();
+}
+
+async function handleVisualLens(x, y) {
+  if (!session) throw new Error('No active session');
+
+  const res = await fetch(`${SERVER_URL}/api/inference/visual-lens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      streamId: session.streamId,
+      x,
+      y,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Visual lens server error ${res.status}`);
   }
 
   return res.json();
