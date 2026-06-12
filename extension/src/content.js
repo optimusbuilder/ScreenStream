@@ -281,11 +281,19 @@
   }
 
   function unlockAudio() {
-    if (audioUnlocked) return;
+    if (audioUnlocked && audioCtx && audioCtx.state === 'running') return;
     initAudio();
-    audioCtx.resume().catch(() => {});
-    audioUnlocked = true;
+    audioCtx.resume().then(() => {
+      audioUnlocked = true;
+    }).catch((err) => {
+      audioUnlocked = false;
+    });
   }
+
+  // Automatically resume AudioContext upon first user interactions in the tab
+  window.addEventListener('click', unlockAudio);
+  window.addEventListener('keydown', unlockAudio);
+  window.addEventListener('mousedown', unlockAudio);
 
   chrome.storage.local.get(['sessionActive'], (data) => {
     if (data.sessionActive) {
