@@ -85,6 +85,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       broadcastError(msg.error);
       handleStopSession();
       return false;
+
+    case 'NAVIGATE_QUERY':
+      handleNavigateQuery(msg.query, msg.width, msg.height)
+        .then((result) => sendResponse({ success: true, data: result }))
+        .catch((err) => sendResponse({ success: false, error: err.message }));
+      return true;
+
+    case 'VLM_INFERENCE':
+      handleVlmInference(msg.x, msg.y)
+        .then((result) => sendResponse({ success: true, data: result }))
+        .catch((err) => sendResponse({ success: false, error: err.message }));
+      return true;
   }
 });
 
@@ -137,8 +149,6 @@ async function startSessionFromTab(tab) {
 
   // Fire initial page description for blind user orientation
   requestPageDescription();
-
-  startInferenceLoop();
 }
 
 function waitForOffscreenReady(timeoutMs = 15000) {
@@ -305,6 +315,49 @@ async function requestPageDescription() {
   } catch (err) {
     console.warn('[bg] Page description error:', err.message);
   }
+}
+
+async function handleNavigateQuery(query, width, height) {
+  if (!session) throw new Error('No active session');
+
+  const res = await fetch(`${SERVER_URL}/api/inference/navigate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      streamId: session.streamId,
+      query,
+      width,
+      height,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Server returned status ${res.status}`);
+  }
+
+  return res.json();
+}
+
+async function handleVlmInference(x, y) {
+  if (!session) throw new Error('No active session');
+
+  const res = await fetch(`${SERVER_URL}/api/inference`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      streamId: session.streamId,
+      mouseX: x,
+      mouseY: y,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Inference server error ${res.status}`);
+  }
+
+  return res.json();
 }
 
 function startKeepalive() {
