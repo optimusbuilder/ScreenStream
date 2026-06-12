@@ -25,6 +25,7 @@
   let micBtn = null;
   let speechRecognition = null;
   let lastVlmElement = null;
+  let sessionActive = false;
 
   // --------------- Helper Functions ---------------
 
@@ -297,6 +298,7 @@
 
   chrome.storage.local.get(['sessionActive'], (data) => {
     if (data.sessionActive) {
+      sessionActive = true;
       unlockAudio();
       createVisualCursor();
       updateInteractiveElementsCache();
@@ -1053,6 +1055,7 @@
   // --------------- Mouse Movements ---------------
 
   window.addEventListener('mousemove', (e) => {
+    if (!sessionActive) return;
     mouseStopped = false;
     clearTimeout(mouseIdleTimer);
     clearTimeout(hoverIdleTimer);
@@ -1122,6 +1125,7 @@
   // --------------- Keyboard Shortcuts ---------------
 
   window.addEventListener('keydown', (e) => {
+    if (!sessionActive) return;
     // Alt+Shift+R: Re-read current element / beacon target
     if (e.altKey && e.shiftKey && e.key === 'R') {
       e.preventDefault();
@@ -1165,6 +1169,7 @@
     }
 
     if (msg.type === 'SESSION_STARTED' || msg.type === 'START_SESSION') {
+      sessionActive = true;
       unlockAudio();
       createVisualCursor();
       updateInteractiveElementsCache();
@@ -1182,6 +1187,7 @@
     }
 
     if (msg.type === 'SESSION_STOPPED') {
+      sessionActive = false;
       stopAudio();
       window.speechSynthesis.cancel();
       if (activeAudio) {
