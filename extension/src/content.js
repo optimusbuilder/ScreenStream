@@ -602,25 +602,91 @@
     announceResult(latestResult, false);
   }
 
+  let activeAudio = null;
+
+  function playBase64Audio(base64Data, onEndCallback = null) {
+    try {
+      if (activeAudio) {
+        activeAudio.pause();
+        activeAudio = null;
+      }
+      
+      window.speechSynthesis.cancel();
+      
+      activeAudio = new Audio("data:audio/mp3;base64," + base64Data);
+      
+      if (onEndCallback) {
+        activeAudio.onended = () => {
+          activeAudio = null;
+          onEndCallback();
+        };
+        activeAudio.onerror = () => {
+          activeAudio = null;
+          onEndCallback();
+        };
+      }
+      
+      activeAudio.play().catch((err) => {
+        console.warn('Audio play blocked/failed:', err);
+        if (onEndCallback) onEndCallback();
+      });
+    } catch (err) {
+      console.error('Error playing base64 audio:', err);
+      if (onEndCallback) onEndCallback();
+    }
+  }
+
   function requestVlmLens(x, y) {
     speakText('Analyzing visual details with Overshoot...', true);
     
+    const el = document.elementFromPoint(x, y);
+    let context = null;
+    if (el) {
+      let textContext = '';
+      let parent = el.parentElement;
+      for (let i = 0; i < 3 && parent; i++) {
+        if (parent.innerText && parent.innerText.length < 300) {
+          textContext = parent.innerText.trim();
+          break;
+        }
+        parent = parent.parentElement;
+      }
+      
+      context = {
+        tagName: el.tagName,
+        alt: el.getAttribute('alt') || '',
+        outerHTML: el.outerHTML ? el.outerHTML.substring(0, 400) : '',
+        textContext: textContext,
+      };
+    }
+
     chrome.runtime.sendMessage({
       type: 'VISUAL_LENS',
       x,
-      y
+      y,
+      context
     }, (response) => {
       if (response && response.success && response.description) {
-        speakText("Visual details: " + response.description, true);
-        chrome.runtime.sendMessage({
-          type: 'INFERENCE_RESULT',
-          data: {
-            element_under_cursor: response.description,
-            interactive: false,
-            nearest_actionable_direction: 'ON_OBJECT',
-            distance_pixels: 0,
-          }
-        }).catch(() => {});
+        const announceText = "Visual details: " + response.description;
+        
+        const updatePopup = () => {
+          chrome.runtime.sendMessage({
+            type: 'INFERENCE_RESULT',
+            data: {
+              element_under_cursor: response.description,
+              interactive: false,
+              nearest_actionable_direction: 'ON_OBJECT',
+              distance_pixels: 0,
+            }
+          }).catch(() => {});
+        };
+
+        if (response.audio) {
+          playBase64Audio(response.audio, updatePopup);
+        } else {
+          speakText(announceText, true);
+          updatePopup();
+        }
       } else {
         console.error('VLM Lens error:', response?.error);
         speakText('Visual analysis failed.', true);
@@ -1107,13 +1173,21 @@
 
     if (msg.type === 'PAGE_DESCRIPTION') {
       setTimeout(() => {
-        speakText(msg.description, false);
+        if (msg.audio) {
+          playBase64Audio(msg.audio);
+        } else {
+          speakText(msg.description, false);
+        }
       }, 2500);
     }
 
     if (msg.type === 'SESSION_STOPPED') {
       stopAudio();
       window.speechSynthesis.cancel();
+      if (activeAudio) {
+        activeAudio.pause();
+        activeAudio = null;
+      }
       removeVisualCursor();
       currentTargetCoord = null;
       latestResult = null;
