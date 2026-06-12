@@ -1,0 +1,13 @@
+{
+  "name": "screenstream-access",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Accessibility-first Chrome Extension — spatial audio via real-time VLM analysis",
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../extension && npm install",
+    "build": "cd extension && npm run build",
+    "dev": "cd server && npm run dev",
+    "verify-key": "cd server && node verify-key.js",
+    "setup": "npm run install:all && npm run build && echo '\n✅ Ready — add your key to server/.env, then run: npm run dev'"
+  }
+}

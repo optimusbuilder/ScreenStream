@@ -12,8 +12,14 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-app.use('/api/session', sessionRoutes);
-app.use('/api/inference', inferenceRoutes);
+function requireApiKey(req, res, next) {
+  if (!process.env.OVERSHOOT_API_KEY) {
+    return res.status(503).json({
+      error: 'OVERSHOOT_API_KEY is not configured. Add it to server/.env and restart.',
+    });
+  }
+  next();
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', hasApiKey: !!process.env.OVERSHOOT_API_KEY });
@@ -29,7 +35,15 @@ app.get('/api/models', async (_req, res) => {
   }
 });
 
+app.use('/api/session', requireApiKey, sessionRoutes);
+app.use('/api/inference', requireApiKey, inferenceRoutes);
+
 app.listen(PORT, () => {
   console.log(`[ScreenStream] Server running on http://localhost:${PORT}`);
-  console.log(`[ScreenStream] API key configured: ${!!process.env.OVERSHOOT_API_KEY}`);
+  if (!process.env.OVERSHOOT_API_KEY) {
+    console.warn('[ScreenStream] WARNING: No OVERSHOOT_API_KEY set. Session and inference endpoints will return 503.');
+    console.warn('[ScreenStream] Copy server/.env.example to server/.env and add your key.');
+  } else {
+    console.log('[ScreenStream] API key configured');
+  }
 });
