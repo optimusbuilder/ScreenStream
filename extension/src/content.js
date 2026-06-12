@@ -458,15 +458,41 @@
     }
   });
 
+  let activeUtterance = null;
+
   function speakText(text, priority = false) {
     if (!speechEnabled) return;
-    if (priority) {
-      window.speechSynthesis.cancel();
+    
+    try {
+      if (priority) {
+        window.speechSynthesis.cancel();
+      }
+      
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.2;
+      utterance.volume = 0.9;
+      
+      activeUtterance = utterance;
+      
+      utterance.onend = () => {
+        if (activeUtterance === utterance) {
+          activeUtterance = null;
+        }
+      };
+      utterance.onerror = () => {
+        if (activeUtterance === utterance) {
+          activeUtterance = null;
+        }
+      };
+      
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+      
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      console.error('Speech synthesis error:', e);
     }
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.2;
-    utterance.volume = 0.9;
-    window.speechSynthesis.speak(utterance);
   }
 
   function generateActionableSpeech(label, tag, role, isInteractive) {
