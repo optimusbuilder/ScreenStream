@@ -1,3 +1,40 @@
+function initPermissionUI() {
+  document.body.innerHTML = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 450px; margin: 80px auto; padding: 40px; border: 1px solid #e5e5e7; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); text-align: center; background: white;">
+      <h2 style="color: #ff1493; margin-bottom: 10px; font-weight: 700;">ScreenStream Access</h2>
+      <p style="color: #48484a; font-size: 15px; line-height: 1.5; margin-bottom: 25px;">Please allow microphone permission when prompted. This will enable voice commands globally across all websites.</p>
+      <button id="ask-btn" style="background: #ff1493; color: white; border: none; padding: 14px 28px; font-size: 16px; border-radius: 12px; cursor: pointer; font-weight: bold; width: 100%; transition: background 0.2s;">Enable Voice Input</button>
+      <p id="status-msg" style="margin-top: 20px; font-weight: 600; color: #86868b;"></p>
+    </div>
+  `;
+  
+  const btn = document.getElementById('ask-btn');
+  const status = document.getElementById('status-msg');
+  
+  btn.onclick = async () => {
+    try {
+      status.innerText = "Requesting permission...";
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      status.innerText = "Permission granted! You can now close this tab.";
+      status.style.color = "#34c759";
+      btn.style.display = "none";
+      chrome.runtime.sendMessage({ type: 'SPEAK', text: 'Microphone permission granted. You can close this tab now.', priority: true });
+    } catch (err) {
+      status.innerText = "Permission denied: " + err.message;
+      status.style.color = "#ff3b30";
+    }
+  };
+}
+
+if (window.location.search.includes('permission=true')) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initPermissionUI);
+  } else {
+    initPermissionUI();
+  }
+}
+
 let room = null;
 let mediaStream = null;
 let videoTrack = null;
@@ -22,6 +59,14 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.type === 'start-recording') {
     acquireTabMedia(msg.data);
+  }
+
+  if (msg.type === 'START_SPEECH_RECOGNITION') {
+    startOffscreenSpeechRecognition();
+  }
+
+  if (msg.type === 'STOP_SPEECH_RECOGNITION') {
+    stopOffscreenSpeechRecognition();
   }
 
   if (msg.type === 'PING') {
@@ -545,4 +590,57 @@ function playStopRecordSound() {
   gain.connect(audioCtx.destination);
   osc.start(now);
   osc.stop(now + 0.20);
+}
+
+// Speech Recognition in Offscreen Document (Secure Extension Context)
+let offscreenSpeechRecognition = null;
+let speechCommandSubmitted = false;
+
+function startOffscreenSpeechRecognition() {
+  stopOffscreenSpeechRecognition();
+
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) {
+    chrome.runtime.sendMessage({ type: 'SPEECH_RECOGNITION_ERROR', error: 'not-supported' });
+    return;
+  }
+
+  speechCommandSubmitted = false;
+  offscreenSpeechRecognition = new SpeechRec();
+  offscreenSpeechRecognition.continuous = false;
+  offscreenSpeechRecognition.interimResults = false;
+  offscreenSpeechRecognition.lang = 'en-US';
+
+  offscreenSpeechRecognition.onresult = (e) => {
+    if (speechCommandSubmitted) return;
+    speechCommandSubmitted = true;
+    const text = e.results[0][0].transcript;
+    chrome.runtime.sendMessage({ type: 'SPEECH_RECOGNITION_RESULT', text: text });
+  };
+
+  offscreenSpeechRecognition.onerror = (e) => {
+    console.error('[offscreen] Speech error:', e.error);
+    chrome.runtime.sendMessage({ type: 'SPEECH_RECOGNITION_ERROR', error: e.error });
+  };
+
+  offscreenSpeechRecognition.onend = () => {
+    chrome.runtime.sendMessage({ type: 'SPEECH_RECOGNITION_END' });
+  };
+
+  try {
+    offscreenSpeechRecognition.start();
+  } catch (err) {
+    console.error('[offscreen] Speech start error:', err);
+    chrome.runtime.sendMessage({ type: 'SPEECH_RECOGNITION_ERROR', error: 'start-failed' });
+  }
+}
+
+function stopOffscreenSpeechRecognition() {
+  speechCommandSubmitted = false;
+  if (offscreenSpeechRecognition) {
+    try {
+      offscreenSpeechRecognition.abort();
+    } catch(e) {}
+    offscreenSpeechRecognition = null;
+  }
 }

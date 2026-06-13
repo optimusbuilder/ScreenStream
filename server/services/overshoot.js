@@ -2,6 +2,26 @@ const BASE_URL = process.env.OVERSHOOT_BASE_URL || 'https://api.overshoot.ai/v1'
 const API_KEY = () => process.env.OVERSHOOT_API_KEY;
 const MODEL = () => process.env.OVERSHOOT_MODEL || 'Qwen/Qwen3.6-27B-FP8';
 
+// Stateful message history for the conversational guide
+const sessionHistories = {};
+
+function getSessionHistory(streamId) {
+  if (!sessionHistories[streamId]) {
+    sessionHistories[streamId] = [];
+  }
+  return sessionHistories[streamId];
+}
+
+function addMessageToHistory(streamId, role, content) {
+  const history = getSessionHistory(streamId);
+  history.push({ role, content });
+  if (history.length > 6) {
+    history.shift();
+  }
+}
+
+const SYSTEM_PROMPT = `You are a warm, proactive, and friendly museum tour guide helping a blind friend explore a website. Speak directly and colloquially to them (e.g. "Welcome to...", "You're pointing at...", "Let's explore..."). Keep descriptions concise (1-2 sentences) but extremely helpful. Answer their questions warmly, and if appropriate, proactively suggest next steps or ask encouraging questions to guide them.`;
+
 // Hosted models on Overshoot's fast path — sub-second TTFT.
 const FALLBACK_MODELS = [
   'Qwen/Qwen3.6-27B-FP8',
@@ -99,6 +119,7 @@ async function keepalive(streamId) {
 }
 
 async function deleteStream(streamId) {
+  delete sessionHistories[streamId]; // Clear conversational history
   const res = await fetchWithTimeout(`${BASE_URL}/streams/${streamId}`, {
     method: 'DELETE',
     headers: headers(),
@@ -299,159 +320,134 @@ async function navigate(streamId, query, width, height) {
   throw lastError || new OvershotError(503, 'All models failed navigation');
 }
 
+// ---- Chat Completion Helper with Model Fallbacks & History ----
+
+async function chatWithVlm(streamId, prompt, maxTokens) {
+  // Add current query/description context to conversation history
+  addMessageToHistory(streamId, 'user', prompt);
+
+  const modelsToTry = [MODEL(), ...FALLBACK_MODELS.filter(m => m !== MODEL())];
+  let lastError = null;
+
+  for (const model of modelsToTry) {
+    try {
+      const history = getSessionHistory(streamId);
+      const apiMessages = [
+        { role: 'system', content: SYSTEM_PROMPT }
+      ];
+
+      // Format previous conversation turns as plain text
+      for (let i = 0; i < history.length - 1; i++) {
+        apiMessages.push({
+          role: history[i].role,
+          content: history[i].content
+        });
+      }
+
+      // Add the latest query with the live VLM frame
+      const latestMsg = history[history.length - 1];
+      apiMessages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: latestMsg.content },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `ovs://streams/${streamId}?frame_index=-1`,
+            },
+          },
+        ]
+      });
+
+      const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          model: model,
+          messages: apiMessages,
+          max_tokens: maxTokens,
+        }),
+      }, { timeoutMs: 12000, retries: 2, backoffMs: [500, 1000] });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new OvershotError(res.status, formatErrorBody(body) || `Model ${model} failed`);
+      }
+
+      const completion = await res.json();
+      const raw = completion.choices?.[0]?.message?.content;
+
+      if (!raw) {
+        throw new OvershotError(500, `Empty response from model ${model}`);
+      }
+
+      // Store assistant's response in history
+      addMessageToHistory(streamId, 'assistant', raw);
+      return raw;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[overshoot] Model ${model} failed chat completion: ${err.message}. Trying next.`);
+    }
+  }
+
+  // Roll back the user message if all attempts failed
+  const history = getSessionHistory(streamId);
+  if (history.length > 0 && history[history.length - 1].role === 'user') {
+    history.pop();
+  }
+
+  throw lastError || new OvershotError(503, 'All models failed chat completion');
+}
+
 // ---- Describe Element (Visual Lens) ----
 
 async function describeElement(streamId, x, y, context = null) {
-  let prompt = `You are a web accessibility visual assistant. The user is hovering their mouse at coordinates X=${x}, Y=${y}. Analyze the live video stream frame and identify the image, chart, canvas, or visual element located at these coordinates (marked visually by a pink target ring).`;
+  let prompt = `The user is hovering their cursor at coordinates X=${x}, Y=${y} (marked on the screen frame by a pink ring). Analyze this live video frame, identify the specific image, card, photo, or visual element they are pointing at, and describe it conversationally. Speak directly to them like a friend (e.g. "You're pointing at..." or "Here is..."). Be descriptive but keep your response to exactly 1 or 2 friendly, colloquial sentences maximum.`;
 
   if (context) {
-    prompt += `\nHere is the metadata of the element under the cursor from the DOM to help anchor your description and avoid hallucinations:`;
+    prompt += `\nHere is the metadata of the element under the cursor from the DOM to help anchor your description:`;
     if (context.tagName) prompt += `\nHTML Tag: ${context.tagName}`;
     if (context.alt) prompt += `\nAlt Text: ${context.alt}`;
     if (context.outerHTML) prompt += `\nOuter HTML Snippet: ${context.outerHTML}`;
     if (context.textContext) prompt += `\nSurrounding Card Text: ${context.textContext}`;
   }
 
-  prompt += `\nDescribe the visual content of this element in detail (e.g. if it is a photo, describe what is in the photo; if it is a chart, describe what it depicts and any visible values or trend). Use the DOM context metadata to ground your description accurately. Be extremely descriptive but concise — keep your answer to exactly 1 or 2 sentences maximum.`;
-
-  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({
-      model: MODEL(),
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `ovs://streams/${streamId}?frame_index=-1`,
-              },
-            },
-          ],
-        },
-      ],
-      max_tokens: 200,
-    }),
-  }, { timeoutMs: 15000, retries: 2, backoffMs: [1000, 2000] });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, formatErrorBody(body) || 'Describe element failed');
-  }
-
-  const completion = await res.json();
-  const raw = completion.choices?.[0]?.message?.content;
-
-  if (!raw) {
-    throw new OvershotError(500, 'Empty description response');
-  }
-
-  return raw;
+  return chatWithVlm(streamId, prompt, 120);
 }
 
 // ---- Page description for initial orientation ----
 
 async function describePage(streamId) {
-  const prompt = `You are a web accessibility assistant helping a blind user understand a web page. Describe the overall layout of this web page concisely. List the main sections, navigation areas, and key interactive elements from top to bottom. Be brief — 2 to 3 sentences maximum. Start with the page title or site name if visible.`;
+  const prompt = `Describe the overall layout and purpose of this webpage concisely and colloquially in 2 to 3 sentences maximum. Start with a warm greeting and mention the website name if visible (e.g., "Welcome to Amazon! We're looking at the homepage..."). Always end your description with an encouraging, proactive question to guide them (e.g., "What should we explore first?" or "What are you looking to find today?").`;
 
-  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({
-      model: MODEL(),
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `ovs://streams/${streamId}?frame_index=-1`,
-              },
-            },
-          ],
-        },
-      ],
-      max_tokens: 200,
-    }),
-  }, { timeoutMs: 15000, retries: 2, backoffMs: [1000, 2000] });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, formatErrorBody(body) || 'Describe failed');
-  }
-
-  const completion = await res.json();
-  const raw = completion.choices?.[0]?.message?.content;
-
-  if (!raw) {
-    throw new OvershotError(500, 'Empty description response');
-  }
-
-  return raw;
+  return chatWithVlm(streamId, prompt, 120);
 }
 
 // ---- Q&A / Conversational Tab Query ----
 
 async function ask(streamId, query) {
-  const prompt = `You are a conversational web accessibility partner for a blind user. The user is asking the following question about the current web page: "${query}". Analyze the live page frame. Answer their question concisely, accurately, and clearly. Keep the explanation user-friendly and limit your response to at most 3 sentences.`;
+  const prompt = `The user is asking you: "${query}". Analyze the live page frame and answer their question warmly, clearly, and concisely, speaking directly to them. Keep your explanation extremely user-friendly and limit it to at most 2 or 3 sentences maximum. If they are asking about an item, describe it and proactively ask a follow-up question (e.g., "Would you like me to click on it?").`;
 
-  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({
-      model: MODEL(),
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `ovs://streams/${streamId}?frame_index=-1`,
-              },
-            },
-          ],
-        },
-      ],
-      max_tokens: 250,
-    }),
-  }, { timeoutMs: 15000, retries: 2, backoffMs: [1000, 2000] });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new OvershotError(res.status, formatErrorBody(body) || 'Q&A request failed');
-  }
-
-  const completion = await res.json();
-  const raw = completion.choices?.[0]?.message?.content;
-
-  if (!raw) {
-    throw new OvershotError(500, 'Empty conversational response');
-  }
-
-  return raw;
+  return chatWithVlm(streamId, prompt, 150);
 }
 
 // ---- Frame waiting ----
 
-async function waitForFrames(streamId, { timeoutMs = 30000, pollMs = 500 } = {}) {
+async function waitForFrames(streamId, { timeoutMs = 45000, pollMs = 500 } = {}) {
   const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
 
   while (Date.now() < deadline) {
     const status = await getStreamStatus(streamId);
+    attempts++;
     if (status.last_frame_at_ms != null) {
+      console.log(`[overshoot] First frame received after ${attempts} polls (${Math.round((Date.now() - (deadline - timeoutMs)) / 1000)}s)`);
       return status;
     }
     await new Promise((r) => setTimeout(r, pollMs));
   }
 
-  throw new OvershotError(408, 'Timed out waiting for first video frame');
+  throw new OvershotError(408, `Timed out waiting for first video frame after ${timeoutMs / 1000}s (${attempts} polls)`);
 }
 
 async function listModels() {

@@ -10,6 +10,7 @@ let offscreenReadyResolver = null;
 let mediaAcquiredResolver = null;
 let offscreenPongResolver = null;
 let captureReadyResolver = null;
+let voiceTabId = null;
 
 // Chrome requires tabCapture from a direct icon click — popup buttons break the gesture chain.
 chrome.action.onClicked.addListener(async (tab) => {
@@ -122,6 +123,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             chrome.runtime.sendMessage({ target: 'offscreen', type: 'SPEECH_STATUS', active: true }).catch(() => {});
           } else if (event.type === 'end' || event.type === 'interrupted' || event.type === 'cancelled' || event.type === 'error') {
             chrome.runtime.sendMessage({ target: 'offscreen', type: 'SPEECH_STATUS', active: false }).catch(() => {});
+            if (contentTabId) {
+              chrome.tabs.sendMessage(contentTabId, { type: 'TTS_ENDED' }).catch(() => {});
+            }
           }
         }
       });
@@ -134,8 +138,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'PAGE_NAVIGATED':
       contentTabId = sender.tab.id;
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_AUDIO' });
+      chrome.tts.stop();
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_ELEVENLABS' }).catch(() => {});
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_AUDIO' }).catch(() => {});
       requestPageDescription();
+      return false;
+
+    case 'START_VOICE_COMMAND':
+      voiceTabId = sender.tab.id;
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_SPEECH_RECOGNITION' }).catch(() => {});
+      return false;
+
+    case 'STOP_VOICE_COMMAND':
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_SPEECH_RECOGNITION' }).catch(() => {});
+      return false;
+
+    case 'SPEECH_RECOGNITION_RESULT':
+      if (voiceTabId !== null) {
+        chrome.tabs.sendMessage(voiceTabId, { type: 'SPEECH_RECOGNITION_RESULT', text: msg.text }).catch(() => {});
+      }
+      return false;
+
+    case 'SPEECH_RECOGNITION_ERROR':
+      if (msg.error === 'not-allowed') {
+        chrome.tts.speak("Microphone access is not enabled. Opening setup page. Please activate the Enable Voice Input button at the center of the screen.", { rate: 1.3 });
+        chrome.tabs.create({ url: chrome.runtime.getURL('offscreen.html?permission=true') });
+      }
+      if (voiceTabId !== null) {
+        chrome.tabs.sendMessage(voiceTabId, { type: 'SPEECH_RECOGNITION_ERROR', error: msg.error }).catch(() => {});
+      }
+      return false;
+
+    case 'SPEECH_RECOGNITION_END':
+      if (voiceTabId !== null) {
+        chrome.tabs.sendMessage(voiceTabId, { type: 'SPEECH_RECOGNITION_END' }).catch(() => {});
+      }
       return false;
   }
 });
@@ -308,10 +345,37 @@ async function publishToLivekit(livekitUrl, livekitToken) {
 }
 
 async function waitForVideoFrames() {
-  const res = await fetch(`${SERVER_URL}/api/session/${session.streamId}/wait-for-frames`);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Video frames never arrived from tab capture');
+  // Retry once if the first attempt times out (LiveKit cold starts can be slow)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 50000);
+      
+      const res = await fetch(`${SERVER_URL}/api/session/${session.streamId}/wait-for-frames`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      
+      if (res.ok) {
+        console.log(`[bg] Video frames arrived (attempt ${attempt + 1})`);
+        return;
+      }
+      
+      const body = await res.json().catch(() => ({}));
+      if (attempt === 0 && res.status === 408) {
+        console.warn('[bg] Frame wait timed out, retrying...');
+        continue;
+      }
+      throw new Error(body.error || 'Video frames never arrived from tab capture');
+    } catch (err) {
+      if (err.name === 'AbortError' && attempt === 0) {
+        console.warn('[bg] Frame wait fetch timed out, retrying...');
+        continue;
+      }
+      if (attempt === 1) {
+        throw new Error(err.message || 'Video frames never arrived from tab capture');
+      }
+    }
   }
 }
 
