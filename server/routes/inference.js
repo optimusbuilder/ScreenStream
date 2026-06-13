@@ -51,6 +51,23 @@ router.post('/describe', async (req, res) => {
   }
 });
 
+// Shared narrator voice for short UI confirmations and errors.
+router.post('/tts', async (req, res) => {
+  const { text } = req.body;
+
+  if (!text || typeof text !== 'string') {
+    return res.status(400).json({ error: 'text is required' });
+  }
+
+  try {
+    const audio = await tts.synthesizeSpeech(text.slice(0, 800));
+    res.json({ audio });
+  } catch (err) {
+    console.error('[inference/tts]', err.status || 500, err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // VLM-guided spatial element search
 router.post('/navigate', async (req, res) => {
   const { streamId, query, width, height } = req.body;

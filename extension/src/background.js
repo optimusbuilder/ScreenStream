@@ -10,7 +10,6 @@ let offscreenReadyResolver = null;
 let mediaAcquiredResolver = null;
 let offscreenPongResolver = null;
 let captureReadyResolver = null;
-let voiceTabId = null;
 
 // Chrome requires tabCapture from a direct icon click — popup buttons break the gesture chain.
 chrome.action.onClicked.addListener(async (tab) => {
@@ -87,6 +86,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       handleStopSession();
       return false;
 
+    case 'LIVEKIT_DISCONNECTED':
+      console.warn('[bg] LiveKit disconnected without stopping voice assistant:', msg.error);
+      chrome.runtime.sendMessage({
+        type: 'SESSION_WARNING',
+        warning: msg.error || 'LiveKit video stream disconnected',
+      }).catch(() => {});
+      return false;
+
     case 'NAVIGATE_QUERY':
       handleNavigateQuery(msg.query, msg.width, msg.height)
         .then((result) => sendResponse({ success: true, data: result }))
@@ -105,18 +112,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch((err) => sendResponse({ success: false, error: err.message }));
       return true;
 
-    case 'ASK_QUERY':
-      handleAskQuery(msg.query)
-        .then((result) => sendResponse({ success: true, description: result.description, audio: result.audio }))
-        .catch((err) => sendResponse({ success: false, error: err.message }));
-      return true;
-
     case 'SPEAK':
       if (msg.priority) {
         chrome.tts.stop();
       }
       chrome.tts.speak(msg.text, {
-        rate: 1.3,
+        rate: 1.0,
         volume: 0.95,
         onEvent: (event) => {
           if (event.type === 'start') {
@@ -144,36 +145,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       requestPageDescription();
       return false;
 
-    case 'START_VOICE_COMMAND':
-      voiceTabId = sender.tab.id;
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_SPEECH_RECOGNITION' }).catch(() => {});
-      return false;
-
-    case 'STOP_VOICE_COMMAND':
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_SPEECH_RECOGNITION' }).catch(() => {});
-      return false;
-
-    case 'SPEECH_RECOGNITION_RESULT':
-      if (voiceTabId !== null) {
-        chrome.tabs.sendMessage(voiceTabId, { type: 'SPEECH_RECOGNITION_RESULT', text: msg.text }).catch(() => {});
-      }
-      return false;
-
-    case 'SPEECH_RECOGNITION_ERROR':
-      if (msg.error === 'not-allowed') {
-        chrome.tts.speak("Microphone access is not enabled. Opening setup page. Please activate the Enable Voice Input button at the center of the screen.", { rate: 1.3 });
-        chrome.tabs.create({ url: chrome.runtime.getURL('offscreen.html?permission=true') });
-      }
-      if (voiceTabId !== null) {
-        chrome.tabs.sendMessage(voiceTabId, { type: 'SPEECH_RECOGNITION_ERROR', error: msg.error }).catch(() => {});
-      }
-      return false;
-
-    case 'SPEECH_RECOGNITION_END':
-      if (voiceTabId !== null) {
-        chrome.tabs.sendMessage(voiceTabId, { type: 'SPEECH_RECOGNITION_END' }).catch(() => {});
-      }
-      return false;
   }
 });
 
@@ -223,6 +194,7 @@ async function startSessionFromTab(tab) {
   await publishToLivekit(session.livekitUrl, session.livekitToken);
   await waitForVideoFrames();
   await notifyContentSessionStarted();
+  startInferenceLoop();
 
   // Fire initial page description for blind user orientation
   requestPageDescription();
@@ -483,26 +455,6 @@ async function handleVisualLens(x, y, context) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Visual lens server error ${res.status}`);
-  }
-
-  return res.json();
-}
-
-async function handleAskQuery(query) {
-  if (!session) throw new Error('No active session');
-
-  const res = await fetch(`${SERVER_URL}/api/inference/ask`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      streamId: session.streamId,
-      query,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Q&A server error ${res.status}`);
   }
 
   return res.json();

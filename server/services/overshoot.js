@@ -20,7 +20,7 @@ function addMessageToHistory(streamId, role, content) {
   }
 }
 
-const SYSTEM_PROMPT = `You are a warm, proactive, and friendly museum tour guide helping a blind friend explore a website. Speak directly and colloquially to them (e.g. "Welcome to...", "You're pointing at...", "Let's explore..."). Keep descriptions concise (1-2 sentences) but extremely helpful. Answer their questions warmly, and if appropriate, proactively suggest next steps or ask encouraging questions to guide them.`;
+const SYSTEM_PROMPT = `You are a warm, friendly tour guide helping a blind user explore a website. Speak directly to them (e.g. "Welcome to...", "You're pointing at...", "Move down to..."). Give clear, actionable guidance using imperative instructions — say "Click to explore" not "Would you like to explore?". Never ask questions. Keep each response to 1-2 concise sentences.`;
 
 // Hosted models on Overshoot's fast path — sub-second TTFT.
 const FALLBACK_MODELS = [
@@ -402,7 +402,7 @@ async function chatWithVlm(streamId, prompt, maxTokens) {
 // ---- Describe Element (Visual Lens) ----
 
 async function describeElement(streamId, x, y, context = null) {
-  let prompt = `The user is hovering their cursor at coordinates X=${x}, Y=${y} (marked on the screen frame by a pink ring). Analyze this live video frame, identify the specific image, card, photo, or visual element they are pointing at, and describe it conversationally. Speak directly to them like a friend (e.g. "You're pointing at..." or "Here is..."). Be descriptive but keep your response to exactly 1 or 2 friendly, colloquial sentences maximum.`;
+  let prompt = `The user is pointing at coordinates X=${x}, Y=${y} on the live page (marked by a pink ring). Identify what they are pointing at and describe it in 1-2 sentences. Use "You're pointing at..." phrasing. If it is clickable, tell them to click it. Never ask questions.`;
 
   if (context) {
     prompt += `\nHere is the metadata of the element under the cursor from the DOM to help anchor your description:`;
@@ -418,15 +418,15 @@ async function describeElement(streamId, x, y, context = null) {
 // ---- Page description for initial orientation ----
 
 async function describePage(streamId) {
-  const prompt = `Describe the overall layout and purpose of this webpage concisely and colloquially in 2 to 3 sentences maximum. Start with a warm greeting and mention the website name if visible (e.g., "Welcome to Amazon! We're looking at the homepage..."). Always end your description with an encouraging, proactive question to guide them (e.g., "What should we explore first?" or "What are you looking to find today?").`;
+  const prompt = `Provide a highly detailed overview of this webpage, its layout, and its purpose. Speak directly to a blind user. Explain exactly what the user can do on this page: if it is a purchase website, describe everything they can do here (such as browsing products, selecting models or variants, checking specs, comparing items, adding items to the cart, or checking support/help options). List the main navigation sections or sidebar menus available. End with warm, structured guidance and a clear next step instruction on how they should start navigating (e.g. "Move your cursor down to the main grid to explore products"). Do not limit to a few sentences; make it highly comprehensive and informative so they are fully oriented. Never ask questions.`;
 
-  return chatWithVlm(streamId, prompt, 120);
+  return chatWithVlm(streamId, prompt, 350);
 }
 
 // ---- Q&A / Conversational Tab Query ----
 
 async function ask(streamId, query) {
-  const prompt = `The user is asking you: "${query}". Analyze the live page frame and answer their question warmly, clearly, and concisely, speaking directly to them. Keep your explanation extremely user-friendly and limit it to at most 2 or 3 sentences maximum. If they are asking about an item, describe it and proactively ask a follow-up question (e.g., "Would you like me to click on it?").`;
+  const prompt = `The user is asking about: "${query}". Analyze the live page and respond in 2-3 sentences with clear, imperative guidance. Tell them what to click or where to move. Never ask questions.`;
 
   return chatWithVlm(streamId, prompt, 150);
 }

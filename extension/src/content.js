@@ -2,6 +2,8 @@
   if (window.__screenStreamAccessLoaded) return;
   window.__screenStreamAccessLoaded = true;
 
+  const SERVER_URL = 'http://localhost:3000';
+
   // --------------- State Variables ---------------
 
   let lastSendTime = 0;
@@ -18,12 +20,13 @@
   // Visual highlights
   let visualCursor = null; 
   let targetBeacon = null; 
-  let speechRecognition = null;
   let lastVlmElement = null;
   let sessionActive = false;
   let lastHeartbeatTime = 0;
   const HEARTBEAT_INTERVAL_MS = 1500;
   let lastBeaconElement = '';
+  let lastClientSideHitTime = 0;
+  let hasExploredSincePageLoad = false;
 
   // --------------- Helper Functions ---------------
 
@@ -139,6 +142,154 @@
     return `${tagDesc} element`;
   }
 
+  function getStructuralContext(el) {
+    let current = el;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const tag = current.tagName;
+      const role = current.getAttribute('role') || '';
+      
+      if (tag === 'NAV' || role === 'navigation') {
+        return 'navigation bar';
+      }
+      if (tag === 'ASIDE' || role === 'complementary') {
+        return 'sidebar';
+      }
+      if (tag === 'HEADER' || role === 'banner') {
+        return 'header';
+      }
+      if (tag === 'FOOTER' || role === 'contentinfo') {
+        return 'footer';
+      }
+      if (tag === 'MAIN' || role === 'main') {
+        return 'main content area';
+      }
+      current = current.parentElement;
+    }
+    return '';
+  }
+
+  function hasDirectText(el) {
+    for (let i = 0; i < el.childNodes.length; i++) {
+      const child = el.childNodes[i];
+      if (child.nodeType === Node.TEXT_NODE && child.textContent.trim().length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function describeElementUnderCursor(el) {
+    if (!el || el === document.body || el === document.documentElement) return null;
+    
+    // Find structural context
+    const context = getStructuralContext(el);
+    const contextPhrase = context ? ` in the ${context}` : '';
+    
+    // Find if it is or is inside an interactive element
+    let interactiveEl = null;
+    let curr = el;
+    while (curr && curr !== document.body && curr !== document.documentElement) {
+      if (isInteractive(curr)) {
+        interactiveEl = curr;
+        break;
+      }
+      curr = curr.parentElement;
+    }
+    
+    if (interactiveEl) {
+      const label = getAccessibilityLabel(interactiveEl);
+      const tag = interactiveEl.tagName;
+      const role = interactiveEl.getAttribute('role') || '';
+      let speech = generateActionableSpeech(label, tag, role, true);
+      if (context) {
+        speech = `${speech} (located in the ${context})`;
+      }
+      return {
+        element: interactiveEl,
+        text: speech,
+        label: label,
+        interactive: true,
+        context: context
+      };
+    }
+    
+    // Check if it is a heading
+    let headingEl = null;
+    curr = el;
+    while (curr && curr !== document.body && curr !== document.documentElement) {
+      if (['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(curr.tagName)) {
+        headingEl = curr;
+        break;
+      }
+      curr = curr.parentElement;
+    }
+    if (headingEl) {
+      const text = headingEl.textContent ? headingEl.textContent.trim() : '';
+      const speech = `${text}${contextPhrase}`;
+      return {
+        element: headingEl,
+        text: speech,
+        label: text,
+        interactive: false,
+        context: context
+      };
+    }
+    
+    // Check if it is an image/visual element
+    const isVisual = ['IMG', 'CANVAS', 'SVG', 'VIDEO'].includes(el.tagName) || el.getAttribute('role') === 'img';
+    if (isVisual) {
+      const alt = el.getAttribute('alt') || '';
+      const label = alt ? `Image: ${alt.trim()}` : 'Unlabeled image';
+      return {
+        element: el,
+        text: `${label}${contextPhrase}`,
+        label: label,
+        interactive: false,
+        context: context,
+        isVisual: true
+      };
+    }
+    
+    // Check if it is a text element or contains text
+    curr = el;
+    let textEl = null;
+    while (curr && curr !== document.body && curr !== document.documentElement) {
+      const textTags = ['P', 'LI', 'SPAN', 'B', 'STRONG', 'I', 'EM', 'CODE', 'PRE', 'BLOCKQUOTE', 'TD', 'TH'];
+      if (textTags.includes(curr.tagName) || (curr.tagName === 'DIV' && hasDirectText(curr))) {
+        textEl = curr;
+        break;
+      }
+      curr = curr.parentElement;
+    }
+    
+    if (textEl) {
+      const text = textEl.textContent ? textEl.textContent.trim() : '';
+      if (text) {
+        return {
+          element: textEl,
+          text: `${text}${contextPhrase}`,
+          label: text,
+          interactive: false,
+          context: context
+        };
+      }
+    }
+    
+    // Fallback description
+    const text = el.textContent ? el.textContent.trim() : '';
+    if (text && text.length < 200) {
+      return {
+        element: el,
+        text: `${text}${contextPhrase}`,
+        label: text,
+        interactive: false,
+        context: context
+      };
+    }
+    
+    return null;
+  }
+
   function updateInteractiveElementsCache() {
     const interactiveSelectors = 'a, button, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="tab"], [tabindex]';
     const allElements = document.querySelectorAll(interactiveSelectors);
@@ -181,16 +332,19 @@
     
     // 1. Direct hit check
     const target = document.elementFromPoint(x, y);
-    const semantic = getSemanticElement(target);
-    if (semantic) {
-      const rect = semantic.getBoundingClientRect();
+    const desc = describeElementUnderCursor(target);
+    if (desc) {
+      const rect = desc.element.getBoundingClientRect();
       return {
-        element: semantic,
+        element: desc.element,
         rect: rect,
         distance_pixels: 0,
         nearest_actionable_direction: 'ON_OBJECT',
-        element_under_cursor: getAccessibilityLabel(semantic),
-        interactive: isInteractive(semantic),
+        element_under_cursor: desc.label,
+        interactive: desc.interactive,
+        full_description: desc.text,
+        is_direct_hit: true,
+        context: desc.context
       };
     }
     
@@ -248,14 +402,7 @@
   }
 
   function updateLocalBeacon(result) {
-    chrome.runtime.sendMessage({
-      target: 'offscreen',
-      type: 'UPDATE_LOCAL_BEACON',
-      direction: result.nearest_actionable_direction,
-      distance: result.distance_pixels,
-      interactive: result.interactive,
-      element: result.element_under_cursor
-    });
+    // Demo default: keep exploration quiet. Spoken labels carry the guidance.
   }
 
   function updateNavigationBeacon() {
@@ -274,13 +421,7 @@
       return;
     }
     
-    chrome.runtime.sendMessage({
-      target: 'offscreen',
-      type: 'UPDATE_NAVIGATION_BEACON',
-      dx: dx,
-      dy: dy,
-      dist: dist
-    });
+    // Visual target remains visible; repeated audio ticks are intentionally disabled.
   }
 
   // --------------- Speech Announcer ---------------
@@ -291,6 +432,7 @@
   const IDLE_SPEECH_INTERVAL_MS = 1200;
   let speechEnabled = true;
   let latestResult = null;
+  let narratorSpeaking = false;
 
   chrome.storage.local.get(['speechEnabled'], (data) => {
     speechEnabled = data.speechEnabled !== false;
@@ -302,16 +444,43 @@
     }
   });
 
-  function speakText(text, priority = false) {
+  async function speakText(text, priority = false, onEnd = null) {
     if (!speechEnabled) return;
     if (priority) {
       chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_ELEVENLABS' });
     }
+
+    narratorSpeaking = true;
+    const finishNarration = () => {
+      narratorSpeaking = false;
+      if (onEnd) onEnd();
+    };
+
+    try {
+      const res = await fetch(`${SERVER_URL}/api/inference/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audio) {
+          playBase64Audio(data.audio, finishNarration);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[ScreenStream] ElevenLabs narrator failed:', err);
+    }
+
+    // Last-resort fallback only. In the happy path, all narration uses ElevenLabs.
     chrome.runtime.sendMessage({
       type: 'SPEAK',
-      text: text,
-      priority: priority
+      text,
+      priority,
     });
+    activeAudioCallback = finishNarration;
   }
 
   function generateActionableSpeech(label, tag, role, isInteractive) {
@@ -319,61 +488,75 @@
     
     const lowerLabel = label.toLowerCase();
     
-    // If not interactive, check if it's a heading
     if (!isInteractive) {
-      if (tag && tag.startsWith('H') && tag.length === 2 && !isNaN(tag[1])) {
-        return `Heading level ${tag[1]}. ${label}.`;
-      }
       return `${label}.`;
     }
     
-    // Interactive elements
+    // Interactive links
     if (tag === 'A' || role === 'link') {
       if (lowerLabel.includes('sign in') || lowerLabel.includes('login') || lowerLabel.includes('log in')) {
-        return `${label}. Click to log into your account.`;
+        return `Clicking this will lead you to the login page to sign into your account.`;
       }
       if (lowerLabel.includes('sign up') || lowerLabel.includes('register') || lowerLabel.includes('create account')) {
-        return `${label}. Click to register a new account.`;
+        return `Clicking this will lead you to the registration page to create a new account.`;
       }
       if (lowerLabel.includes('cart') || lowerLabel.includes('bag') || lowerLabel.includes('checkout')) {
-        return `Shopping Cart. ${label}. Click to review items and check out.`;
+        return `Clicking this will open your shopping cart to review items and start checkout.`;
       }
-      return `${label}. Click to follow.`;
+      if (lowerLabel.includes('store') || lowerLabel.includes('shop')) {
+        return `Clicking this will lead you to the store page to browse all available products.`;
+      }
+      if (lowerLabel.includes('support') || lowerLabel.includes('help')) {
+        return `Clicking this will open the support and help page.`;
+      }
+      return `Clicking this will navigate you to the ${label} page.`;
     }
     
+    // Interactive buttons
     if (tag === 'BUTTON' || role === 'button') {
       if (lowerLabel.includes('search') || lowerLabel.includes('find')) {
-        return `Search button. ${label}. Click to submit query.`;
+        return `Clicking this will submit and search your query.`;
       }
       if (lowerLabel.includes('cart') || lowerLabel.includes('bag') || lowerLabel.includes('add')) {
-        return `Add to Bag button. ${label}. Click to add items to your shopping cart.`;
+        return `Clicking this will add the selected product to your shopping cart.`;
       }
       if (lowerLabel.includes('close') || lowerLabel.includes('dismiss')) {
-        return `Close button. Click to close.`;
+        return `Clicking this will close and dismiss this view.`;
       }
       if (lowerLabel.includes('submit') || lowerLabel.includes('send')) {
-        return `Submit button. ${label}. Click to send.`;
+        return `Clicking this will submit the form and send your details.`;
       }
-      return `Button. ${label}. Click to activate.`;
+      if (lowerLabel.includes('buy') || lowerLabel.includes('purchase')) {
+        return `Clicking this will start the purchase flow for this item.`;
+      }
+      if (lowerLabel.includes('select') || lowerLabel.includes('choose')) {
+        return `Clicking this will select this option.`;
+      }
+      return `Clicking this will activate the ${label} action.`;
     }
     
+    // Input fields
     if (tag === 'INPUT') {
       if (lowerLabel.includes('search')) {
-        return `Search text field. ${label}. Type your search query here.`;
+        return `Search text field. Type your query here.`;
       }
       if (lowerLabel.includes('email')) {
-        return `Email address input field. ${label}. Enter your email.`;
+        return `Email address field. Type your email address.`;
       }
       if (lowerLabel.includes('password')) {
-        return `Password input field. ${label}. Enter your password securely.`;
+        return `Password field. Type your password securely.`;
       }
-      return `Text input field. ${label}. Type your response here.`;
+      return `Text input field. Type your text here.`;
     }
     
-    return `${label}, interactive element.`;
+    return `${label}.`;
   }
 
   function buildSpeechText(result) {
+    if (result.full_description) {
+      return result.full_description;
+    }
+
     let descriptionText = '';
     if (result.element) {
       const tag = result.element.tagName;
@@ -381,31 +564,21 @@
       descriptionText = generateActionableSpeech(result.element_under_cursor, tag, role, result.interactive);
     } else {
       descriptionText = result.element_under_cursor;
-      if (result.interactive) {
-        descriptionText += ', interactive.';
-      }
     }
     
-    if (result.nearest_actionable_direction !== 'ON_OBJECT' && result.distance_pixels > 0) {
-      const dirLabel = {
-        N: 'above',
-        S: 'below',
-        E: 'to the right',
-        W: 'to the left',
-      }[result.nearest_actionable_direction] || '';
-      descriptionText += ` Nearest control ${dirLabel}, ${Math.round(result.distance_pixels)} pixels.`;
-    }
     return descriptionText;
   }
 
   function announceResult(result, force = false) {
     if (!speechEnabled) return;
 
-    const element = result.element_under_cursor;
+    if (!force && narratorSpeaking) return;
 
-    if (!force && element === lastSpokenElement) return;
+    const key = result.full_description || result.element_under_cursor;
 
-    lastSpokenElement = element;
+    if (!force && key === lastSpokenElement) return;
+
+    lastSpokenElement = key;
     lastSpeechTime = Date.now();
 
     const text = buildSpeechText(result);
@@ -414,45 +587,34 @@
 
   function maybeAnnounce() {
     if (!latestResult) return;
-    announceResult(latestResult, false);
+    // Only speak automatically during mouse movement if it is a direct hit
+    if (latestResult.is_direct_hit) {
+      announceResult(latestResult, false);
+    }
   }
 
   let activeAudioCallback = null;
 
   function playBase64Audio(base64Data, onEndCallback = null) {
-    activeAudioCallback = onEndCallback;
+    narratorSpeaking = true;
+    activeAudioCallback = () => {
+      narratorSpeaking = false;
+      if (onEndCallback) onEndCallback();
+    };
     chrome.runtime.sendMessage({
       target: 'offscreen',
       type: 'PLAY_BASE64_AUDIO',
       base64Data: base64Data,
-      playbackRate: 1.18
+      playbackRate: 1.0
     });
   }
 
-  let pendingAutoListen = false;
-
-  function speakGuideResponse(text, base64Audio = null, onEnd = null) {
+  function speakNarration(text, base64Audio = null, onEnd = null) {
     if (!speechEnabled) return;
-
-    pendingAutoListen = text && text.includes('?');
-
-    const handleSpeechFinished = () => {
-      if (onEnd) onEnd();
-      if (pendingAutoListen) {
-        pendingAutoListen = false;
-        setTimeout(() => {
-          if (sessionActive && !voiceListening) {
-            startVoiceCommand();
-          }
-        }, 400);
-      }
-    };
-
     if (base64Audio) {
-      playBase64Audio(base64Audio, handleSpeechFinished);
+      playBase64Audio(base64Audio, onEnd);
     } else {
-      speakText(text, true); // Local TTS
-      activeAudioCallback = handleSpeechFinished;
+      speakText(text, true, onEnd);
     }
   }
 
@@ -499,7 +661,7 @@
           }).catch(() => {});
         };
 
-        speakGuideResponse(announceText, response.audio, updatePopup);
+        speakNarration(announceText, response.audio, updatePopup);
       } else {
         console.error('VLM Lens error:', response?.error);
         speakText('Visual analysis failed.', true);
@@ -518,7 +680,7 @@
     } else {
       lastVlmElement = null;
       if (latestResult) {
-        announceResult(latestResult, false);
+        announceResult(latestResult, true);
       }
     }
   }
@@ -579,7 +741,7 @@
           70% { box-shadow: 0 0 0 15px rgba(46, 204, 113, 0); transform: translate(-50%, -50%) scale(1.1); }
           100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); transform: translate(-50%, -50%) scale(1); }
         }
-        /* Modal CSS removed — using voice-only command system */
+        /* Pointer-guided exploration — no voice commands */
       `;
       document.head.appendChild(style);
     }
@@ -616,544 +778,12 @@
     }
   }
 
-  // --------------- Voice Command System (No Visual Modal) ---------------
-
-  let commandSubmitted = false;
-  let voiceListening = false;
-
-  function startVoiceCommand() {
-    if (voiceListening) {
-      speakText('Already listening. Say your command.', true);
-      return;
-    }
-    
-    voiceListening = true;
-    commandSubmitted = false;
-    
-    chrome.runtime.sendMessage({ type: 'START_VOICE_COMMAND' });
-  }
-
-  function stopVoiceCommand() {
-    voiceListening = false;
-    commandSubmitted = false;
-    chrome.runtime.sendMessage({ type: 'STOP_VOICE_COMMAND' });
-  }
-
-  function submitSearch(command) {
-    if (!command || !command.trim()) return;
-    
-    stopVoiceCommand();
-    const raw = command.trim();
-    const text = raw.toLowerCase();
-    
-    // --- Robust intent extraction (keyword-anywhere, not prefix-only) ---
-    
-    // Pattern 0: Help command
-    if (text === 'help' || text.includes('what can you do') || text.includes('what commands')) {
-      speakText('You can say: search for something, click on a button or link, read this page, scroll down, scroll up, go back, go forward, or ask any question about what you see. Double tap shift to speak a command.', true);
-      scheduleHandsFreeReopen();
-      return;
-    }
-    
-    // Pattern 0.5: Scroll commands (instant, no VLM)
-    if (text.includes('scroll down') || text === 'page down' || text === 'down') {
-      window.scrollBy({ top: window.innerHeight * 0.75, behavior: 'smooth' });
-      speakText('Scrolled down.', true);
-      setTimeout(() => updateInteractiveElementsCache(), 600);
-      scheduleHandsFreeReopen();
-      return;
-    }
-    if (text.includes('scroll up') || text === 'page up' || text === 'up') {
-      window.scrollBy({ top: -window.innerHeight * 0.75, behavior: 'smooth' });
-      speakText('Scrolled up.', true);
-      setTimeout(() => updateInteractiveElementsCache(), 600);
-      scheduleHandsFreeReopen();
-      return;
-    }
-    if (text.includes('go to top') || text.includes('scroll to top') || text === 'top') {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      speakText('At the top of the page.', true);
-      setTimeout(() => updateInteractiveElementsCache(), 600);
-      scheduleHandsFreeReopen();
-      return;
-    }
-    if (text.includes('go to bottom') || text.includes('scroll to bottom') || text === 'bottom') {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-      speakText('At the bottom of the page.', true);
-      setTimeout(() => updateInteractiveElementsCache(), 600);
-      scheduleHandsFreeReopen();
-      return;
-    }
-    
-    // Pattern 0.6: Back / Forward navigation (instant)
-    if (text === 'go back' || text === 'back' || text === 'previous page') {
-      speakText('Going back.', true);
-      window.history.back();
-      return;
-    }
-    if (text === 'go forward' || text === 'forward' || text === 'next page') {
-      speakText('Going forward.', true);
-      window.history.forward();
-      return;
-    }
-    
-    // Pattern 0.7: Read page content (instant DOM extraction, no VLM)
-    if (text === 'read this page' || text === 'read the page' || text === 'read page' || text.includes('read this') || text.includes('read it to me') || text.includes('read aloud')) {
-      executeReadPage();
-      return;
-    }
-    
-    // Pattern 0.8: Form fill (instant DOM)
-    const fillMatch = text.match(/(?:fill|type|enter|put|write)\s+(.+?)\s+(?:in|into|in the|on|on the)\s+(.+)/i)
-      || text.match(/(?:fill|type|enter|put|write)\s+(.+?)\s+(?:as|with)\s+(.+)/i);
-    if (fillMatch) {
-      executeFormFill(fillMatch[2].trim(), fillMatch[1].trim());
-      return;
-    }
-    // Alternate: "fill [field] with [value]"
-    const fillAlt = text.match(/(?:fill)\s+(?:in\s+)?(?:the\s+)?(.+?)\s+(?:with|as)\s+(.+)/i);
-    if (fillAlt) {
-      executeFormFill(fillAlt[1].trim(), fillAlt[2].trim());
-      return;
-    }
-    
-    // Pattern 1: Search intent — look for "search" or "find" + a payload anywhere
-    const searchMatch = text.match(/(?:search\s+for|search|find|look\s+for|look\s+up)\s+(.+)/i);
-    if (searchMatch) {
-      executeSearchTask(searchMatch[1].trim());
-      return;
-    }
-    
-    // Pattern 2: Click/Navigate intent — look for "click", "go to", "open", "press", "tap"
-    const clickMatch = text.match(/(?:click(?:\s+on)?|go\s+to|open|press|tap|select|navigate\s+to)\s+(.+)/i);
-    if (clickMatch) {
-      executeClickTask(clickMatch[1].trim());
-      return;
-    }
-    
-    // Pattern 3: Read/Describe intent — route to VLM Q&A
-    const readMatch = text.match(/(?:summarize|describe|tell\s+me\s+about|what(?:'s|\s+is)\s+on)\s*(.*)/i);
-    if (readMatch) {
-      executeAskTask(raw);
-      return;
-    }
-    
-    // Pattern 4: Question intent — starts with question word or contains "?"
-    const isQuestion = /^(what|why|how|who|where|when|is|are|can|could|should|would|do|does|did)\b/i.test(text) || text.includes('?');
-    if (isQuestion) {
-      executeAskTask(raw);
-      return;
-    }
-    
-    // Pattern 5: Multi-word default → Q&A, single-word/two-word → spatial guide
-    if (text.split(/\s+/).length > 2) {
-      executeAskTask(raw);
-    } else {
-      executeGuideTask(raw);
-    }
-  }
-
-  // React-safe way to set input value
-  function setNativeInputValue(inputEl, value) {
-    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-      || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-    if (nativeSetter) {
-      nativeSetter.call(inputEl, value);
-    } else {
-      inputEl.value = value;
-    }
-    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-    inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
-  // Dispatch a full Enter key sequence (keydown + keypress + keyup)
-  function dispatchEnterKey(el) {
-    const props = { key: 'Enter', keyCode: 13, code: 'Enter', which: 13, bubbles: true, cancelable: true };
-    el.dispatchEvent(new KeyboardEvent('keydown', props));
-    el.dispatchEvent(new KeyboardEvent('keypress', props));
-    el.dispatchEvent(new KeyboardEvent('keyup', props));
-  }
-
-  // After a command finishes, prompt readiness
-  function scheduleHandsFreeReopen() {
-    setTimeout(() => {
-      if (sessionActive && !voiceListening) {
-        speakText('Ready for next command.', false);
-      }
-    }, 1500);
-  }
-
-  function executeSearchTask(searchTerm) {
-    speakText(`Locating search box to search for: ${searchTerm}`, true);
-    
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    
-    // Try local DOM search first (fast and reliable), then VLM fallback
-    const localInput = findSearchInputLocally();
-    if (localInput) {
-      performSearch(localInput, searchTerm);
-      return;
-    }
-    
-    chrome.runtime.sendMessage({
-      type: 'NAVIGATE_QUERY',
-      query: 'search input box or search bar',
-      width,
-      height
-    }, (response) => {
-      if (response && response.success && response.data && response.data.found) {
-        const data = response.data;
-        const targetEl = document.elementFromPoint(data.x, data.y);
-        const inputEl = findInputElement(targetEl);
-        
-        if (inputEl) {
-          latestMouse = { x: data.x, y: data.y };
-          if (visualCursor) {
-            visualCursor.style.left = `${data.x}px`;
-            visualCursor.style.top = `${data.y}px`;
-          }
-          performSearch(inputEl, searchTerm);
-        } else {
-          speakText(`Found search area but could not locate the input field. Try clicking on the search box first.`, true);
-          scheduleHandsFreeReopen();
-        }
-      } else {
-        speakText(`Could not find a search box on this page.`, true);
-        scheduleHandsFreeReopen();
-      }
-    });
-  }
-
-  function performSearch(inputEl, searchTerm) {
-    inputEl.focus();
-    setNativeInputValue(inputEl, searchTerm);
-    speakText(`Searching for ${searchTerm}...`, true);
-    
-    setTimeout(() => {
-      const form = inputEl.closest('form');
-      if (form) {
-        // Try submitting the form, but also fire Enter as fallback for SPAs
-        try {
-          form.requestSubmit();
-        } catch(e) {
-          form.submit();
-        }
-      } else {
-        dispatchEnterKey(inputEl);
-      }
-      scheduleHandsFreeReopen();
-    }, 600);
-  }
-
-  function executeClickTask(targetElement) {
-    speakText(`Locating and clicking: ${targetElement}`, true);
-    
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    
-    chrome.runtime.sendMessage({
-      type: 'NAVIGATE_QUERY',
-      query: targetElement,
-      width,
-      height
-    }, (response) => {
-      if (response && response.success && response.data && response.data.found) {
-        const data = response.data;
-        
-        latestMouse = { x: data.x, y: data.y };
-        if (visualCursor) {
-          visualCursor.style.left = `${data.x}px`;
-          visualCursor.style.top = `${data.y}px`;
-        }
-        
-        const rawEl = document.elementFromPoint(data.x, data.y);
-        const clickableEl = findClickableElement(rawEl);
-        
-        if (clickableEl) {
-          speakText(`Clicking ${data.element_name}.`, true);
-          clickableEl.focus();
-          clickableEl.click();
-        } else if (rawEl) {
-          speakText(`Clicking ${data.element_name}.`, true);
-          rawEl.click();
-        } else {
-          speakText(`Found ${targetElement} but could not interact with it.`, true);
-        }
-      } else {
-        speakText(`Could not locate ${targetElement} on this page.`, true);
-      }
-      scheduleHandsFreeReopen();
-    });
-  }
-
-  function executeAskTask(question) {
-    speakText('Analyzing page to answer your question...', true);
-    
-    chrome.runtime.sendMessage({
-      type: 'ASK_QUERY',
-      query: question
-    }, (response) => {
-      if (response && response.success && response.description) {
-        const announceText = response.description;
-        speakGuideResponse(announceText, response.audio, () => scheduleHandsFreeReopen());
-      } else {
-        console.error('Q&A error:', response?.error);
-        speakText('Sorry, I could not answer that question. Try again.', true);
-        scheduleHandsFreeReopen();
-      }
-    });
-  }
-
-  function executeGuideTask(query) {
-    speakText('Searching the page...', true);
-    
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    
-    chrome.runtime.sendMessage({
-      type: 'NAVIGATE_QUERY',
-      query: query,
-      width,
-      height
-    }, (response) => {
-      if (response && response.success && response.data) {
-        const data = response.data;
-        if (data.found) {
-          currentTargetCoord = {
-            x: data.x,
-            y: data.y,
-            name: data.element_name,
-            description: data.guidance
-          };
-          
-          createTargetBeacon(data.x, data.y);
-          speakText(`Found ${data.element_name}. ${data.guidance}. Navigate towards the beacon sound.`, true);
-          
-          unlockAudio();
-          updateNavigationBeacon();
-        } else {
-          speakText(`Could not find ${query} on this page.`, true);
-          scheduleHandsFreeReopen();
-        }
-      } else {
-        console.error('Navigation error:', response?.error);
-        speakText('Navigation search failed. Try again.', true);
-        scheduleHandsFreeReopen();
-      }
-    });
-  }
-
-  function findInputElement(el) {
-    if (!el) return null;
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el;
-    const input = el.querySelector('input, textarea');
-    if (input) return input;
-    
-    let parent = el.parentElement;
-    for (let i = 0; i < 3 && parent; i++) {
-      if (parent.tagName === 'INPUT') return parent;
-      const childInput = parent.querySelector('input, textarea');
-      if (childInput) return childInput;
-      parent = parent.parentElement;
-    }
-    return null;
-  }
-
-  function findSearchInputLocally() {
-    // Try progressively broader selectors (most specific first)
-    const selectors = [
-      'input[type="search"]',
-      'input[role="searchbox"]',
-      '[role="search"] input',
-      'input[name="q"]',                    // Google, many sites
-      'input[name="query"]',                // Generic
-      'input[name="search_query"]',         // YouTube
-      'input[id*="search" i]',
-      'input[name*="search" i]',
-      'input[placeholder*="search" i]',
-      'input[aria-label*="search" i]',
-      'textarea[aria-label*="search" i]',
-    ];
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
-    }
-    return null;
-  }
-
-  function findClickableElement(el) {
-    if (!el) return null;
-    let current = el;
-    while (current && current !== document.body && current !== document.documentElement) {
-      if (isInteractive(current)) {
-        return current;
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  // --------------- Read Page (DOM Text Extraction) ---------------
-
-  function executeReadPage() {
-    speakText('Reading page content...', true);
-    
-    // Try to find the main content area
-    const mainContent = document.querySelector('main, [role="main"], article, .article, .content, .post, .entry-content, #content, #main');
-    let textSource = mainContent || document.body;
-    
-    // Extract meaningful text, skipping nav/header/footer/scripts
-    const skipTags = new Set(['NAV', 'HEADER', 'FOOTER', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'IFRAME']);
-    const skipRoles = new Set(['navigation', 'banner', 'contentinfo', 'complementary']);
-    
-    let paragraphs = [];
-    const walker = document.createTreeWalker(
-      textSource,
-      NodeFilter.SHOW_ELEMENT,
-      {
-        acceptNode: (node) => {
-          if (skipTags.has(node.tagName)) return NodeFilter.FILTER_REJECT;
-          if (skipRoles.has(node.getAttribute('role'))) return NodeFilter.FILTER_REJECT;
-          if (['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'TD', 'BLOCKQUOTE', 'FIGCAPTION'].includes(node.tagName)) {
-            return NodeFilter.FILTER_ACCEPT;
-          }
-          return NodeFilter.FILTER_SKIP;
-        }
-      }
-    );
-    
-    let node;
-    while ((node = walker.nextNode()) && paragraphs.length < 20) {
-      const text = node.textContent?.trim();
-      if (text && text.length > 15) {
-        const tag = node.tagName;
-        if (tag.startsWith('H') && tag.length === 2) {
-          paragraphs.push(`Heading: ${text}`);
-        } else {
-          paragraphs.push(text.length > 200 ? text.substring(0, 197) + '...' : text);
-        }
-      }
-    }
-    
-    if (paragraphs.length === 0) {
-      // Fallback: just grab visible text
-      const bodyText = textSource.innerText?.trim() || '';
-      if (bodyText.length > 0) {
-        paragraphs.push(bodyText.substring(0, 800));
-      } else {
-        speakText('Could not find readable content on this page.', true);
-        scheduleHandsFreeReopen();
-        return;
-      }
-    }
-    
-    const fullText = paragraphs.join('. ');
-    
-    // Use ElevenLabs for long content if available, otherwise chrome.tts
-    if (fullText.length > 100) {
-      chrome.runtime.sendMessage({
-        type: 'ASK_QUERY',
-        query: `Please read and summarize the following page content for a blind user in a clear, natural way: ${fullText.substring(0, 1500)}`
-      }, (response) => {
-        if (response && response.success && response.description) {
-          speakGuideResponse(response.description, response.audio, () => scheduleHandsFreeReopen());
-        } else {
-          // Fallback: just read the raw text
-          speakText(fullText.substring(0, 500), true);
-          scheduleHandsFreeReopen();
-        }
-      });
-    } else {
-      speakText(fullText, true);
-      scheduleHandsFreeReopen();
-    }
-  }
-
-  // --------------- Form Fill ---------------
-
-  function executeFormFill(fieldHint, value) {
-    speakText(`Filling ${fieldHint} with ${value}...`, true);
-    
-    // Try to find the input by various attributes
-    const hint = fieldHint.toLowerCase();
-    const allInputs = document.querySelectorAll('input, textarea, select');
-    let bestMatch = null;
-    let bestScore = 0;
-    
-    for (const input of allInputs) {
-      const style = window.getComputedStyle(input);
-      if (style.display === 'none' || style.visibility === 'hidden') continue;
-      
-      let score = 0;
-      const attrs = [
-        input.getAttribute('name'),
-        input.getAttribute('id'),
-        input.getAttribute('placeholder'),
-        input.getAttribute('aria-label'),
-        input.getAttribute('type'),
-      ].filter(Boolean).map(a => a.toLowerCase());
-      
-      // Check for label element
-      if (input.id) {
-        const label = document.querySelector(`label[for="${input.id}"]`);
-        if (label) attrs.push(label.textContent.trim().toLowerCase());
-      }
-      
-      for (const attr of attrs) {
-        if (attr.includes(hint) || hint.includes(attr)) {
-          score += 10;
-        }
-        // Fuzzy: check each word
-        const hintWords = hint.split(/\s+/);
-        for (const word of hintWords) {
-          if (word.length > 2 && attr.includes(word)) score += 3;
-        }
-      }
-      
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = input;
-      }
-    }
-    
-    if (bestMatch) {
-      bestMatch.focus();
-      setNativeInputValue(bestMatch, value);
-      speakText(`Filled ${fieldHint} with ${value}.`, true);
-      scheduleHandsFreeReopen();
-    } else {
-      // Fallback: try VLM to locate the field
-      const width = window.innerWidth;
-      const height = window.innerHeight;
-      chrome.runtime.sendMessage({
-        type: 'NAVIGATE_QUERY',
-        query: `${fieldHint} input field`,
-        width,
-        height
-      }, (response) => {
-        if (response && response.success && response.data && response.data.found) {
-          const targetEl = document.elementFromPoint(response.data.x, response.data.y);
-          const inputEl = findInputElement(targetEl);
-          if (inputEl) {
-            inputEl.focus();
-            setNativeInputValue(inputEl, value);
-            speakText(`Filled ${fieldHint} with ${value}.`, true);
-          } else {
-            speakText(`Found ${fieldHint} area but could not fill it.`, true);
-          }
-        } else {
-          speakText(`Could not find ${fieldHint} field on this page.`, true);
-        }
-        scheduleHandsFreeReopen();
-      });
-    }
-  }
 
   // --------------- Mouse Movements ---------------
 
   window.addEventListener('mousemove', (e) => {
     if (!sessionActive) return;
+    hasExploredSincePageLoad = true;
     mouseStopped = false;
     clearTimeout(mouseIdleTimer);
     clearTimeout(hoverIdleTimer);
@@ -1193,10 +823,6 @@
         latestResult = result;
         updateLocalBeacon(result);
         
-        if (result.distance_pixels > 200) {
-          triggerHeartbeat();
-        }
-
         chrome.runtime.sendMessage({
           type: 'INFERENCE_RESULT',
           data: {
@@ -1204,6 +830,10 @@
             interactive: result.interactive,
             nearest_actionable_direction: result.nearest_actionable_direction,
             distance_pixels: Math.round(result.distance_pixels),
+            full_description: result.full_description,
+            is_direct_hit: result.is_direct_hit,
+            context: result.context,
+            isClientSide: true
           }
         }).catch(() => {});
       }
@@ -1212,71 +842,33 @@
     mouseIdleTimer = setTimeout(() => {
       mouseStopped = true;
       handleLinger(latestMouse.x, latestMouse.y);
-    }, 3000);
+    }, IDLE_THRESHOLD_MS);
   });
 
   // --------------- Keyboard Shortcuts ---------------
 
-  let lastShiftTime = 0;
-
   window.addEventListener('keydown', (e) => {
     if (!sessionActive) return;
 
-    // Shift double-press detection
-    if (e.key === 'Shift') {
-      const now = Date.now();
-      if (now - lastShiftTime < 400) {
-        e.preventDefault();
-        startVoiceCommand();
-      }
-      lastShiftTime = now;
-    }
-
-    // Tilde key trigger
-    if (e.key === '`') {
-      const isTyping = document.activeElement && (
-        document.activeElement.tagName === 'INPUT' || 
-        document.activeElement.tagName === 'TEXTAREA' || 
-        document.activeElement.isContentEditable
-      );
-      if (!isTyping) {
-        e.preventDefault();
-        startVoiceCommand();
-      }
-    }
-
-    // Escape key — cancel voice listening
-    if (e.key === 'Escape' && voiceListening) {
-      e.preventDefault();
-      stopVoiceCommand();
-      speakText('Cancelled.', true);
-    }
-
-    // Alt+Shift+R: Re-read current element / beacon target
+    // Alt+Shift+R: Re-read current element
     if (e.altKey && e.shiftKey && e.key === 'R') {
       e.preventDefault();
       if (currentTargetCoord) {
-        speakText(`Navigating towards: ${currentTargetCoord.name}. ${currentTargetCoord.description}`, true);
+        speakText(`Move toward ${currentTargetCoord.name}. ${currentTargetCoord.description}`, true);
       } else if (latestResult) {
         announceResult(latestResult, true);
       } else {
-        speakText('No element detected yet. Move your mouse to explore.', true);
+        speakText('Move your cursor to explore the page.', true);
       }
     }
 
-    // Alt+Shift+G: Voice command
-    if (e.altKey && e.shiftKey && e.key === 'G') {
-      e.preventDefault();
-      startVoiceCommand();
-    }
-
-    // Alt+Shift+V: Trigger Visual Lens (VLM visual explain)
+    // Alt+Shift+V: Describe what you're pointing at (visual lens)
     if (e.altKey && e.shiftKey && e.key === 'V') {
       e.preventDefault();
       requestVlmLens(latestMouse.x, latestMouse.y);
     }
 
-    // Alt+Shift+S: Trigger page layout Sonar Sweep
+    // Alt+Shift+S: Page layout sonar sweep
     if (e.altKey && e.shiftKey && e.key === 'S') {
       e.preventDefault();
       triggerSonarSweep();
@@ -1284,11 +876,7 @@
   });
 
   function triggerHeartbeat() {
-    const now = Date.now();
-    if (now - lastHeartbeatTime >= HEARTBEAT_INTERVAL_MS) {
-      lastHeartbeatTime = now;
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_HEARTBEAT' });
-    }
+    // Repeating background heartbeat was too distracting for the accessibility demo.
   }
 
   function triggerSonarSweep() {
@@ -1336,45 +924,46 @@
   // --------------- Message Handling ---------------
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'SPEECH_RECOGNITION_RESULT') {
-      if (commandSubmitted) return;
-      commandSubmitted = true;
-      voiceListening = false;
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_STOP_RECORD' });
-      submitSearch(msg.text);
-    }
-
-    if (msg.type === 'SPEECH_RECOGNITION_ERROR') {
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'PLAY_STOP_RECORD' });
-      voiceListening = false;
-      if (msg.error === 'no-speech') {
-        speakText('I didn\'t hear anything. Double tap shift to try again.', true);
-      } else if (msg.error !== 'aborted' && msg.error !== 'not-allowed') {
-        speakText('Voice input failed. Double tap shift to try again.', true);
-      }
-    }
-
-    if (msg.type === 'SPEECH_RECOGNITION_END') {
-      voiceListening = false;
-    }
-
     if (msg.type === 'INFERENCE_RESULT') {
+      if (msg.data.isClientSide) {
+        if (msg.data.is_direct_hit) {
+          lastClientSideHitTime = Date.now();
+        }
+      } else {
+        // Server-side VLM inference result
+        // Ignore if we had a client-side direct hit readout very recently (within 1.5s)
+        if (Date.now() - lastClientSideHitTime < 1500) {
+          return;
+        }
+      }
+
       latestResult = msg.data;
       updateLocalBeacon(msg.data);
+      if (sessionActive && !narratorSpeaking) {
+        const now = Date.now();
+        if (now - lastSpeechTime >= CONTINUOUS_SPEECH_INTERVAL_MS) {
+          maybeAnnounce();
+        }
+      }
     }
 
     if (msg.type === 'SESSION_STARTED' || msg.type === 'START_SESSION') {
       sessionActive = true;
+      hasExploredSincePageLoad = false;
       createVisualCursor();
       updateInteractiveElementsCache();
       unlockAudio();
-      speakText('ScreenStream active. Move your cursor to explore the page. Double tap shift to speak a command.', true);
+      speakText('ScreenStream active. Move your cursor to explore.', true);
     }
 
     if (msg.type === 'PAGE_DESCRIPTION') {
-      setTimeout(() => {
-        speakGuideResponse(msg.description, msg.audio);
-      }, 1500);
+      if (!hasExploredSincePageLoad) {
+        setTimeout(() => {
+          if (!hasExploredSincePageLoad) {
+            speakNarration(msg.description, msg.audio);
+          }
+        }, 1500);
+      }
     }
 
     if (msg.type === 'AUDIO_ENDED' || msg.type === 'TTS_ENDED') {
@@ -1382,6 +971,8 @@
         const cb = activeAudioCallback;
         activeAudioCallback = null;
         cb();
+      } else {
+        narratorSpeaking = false;
       }
     }
 
@@ -1395,6 +986,8 @@
       latestResult = null;
       lastSpokenElement = '';
       lastBeaconElement = '';
+      lastClientSideHitTime = 0;
+      hasExploredSincePageLoad = false;
       speakText('ScreenStream stopped.');
     }
   });
@@ -1402,6 +995,7 @@
   chrome.storage.local.get(['sessionActive'], (data) => {
     if (data.sessionActive) {
       sessionActive = true;
+      hasExploredSincePageLoad = false;
       createVisualCursor();
       updateInteractiveElementsCache();
       // Delay audio init to give offscreen time to be ready after navigation
@@ -1409,6 +1003,26 @@
         initAudio();
         chrome.runtime.sendMessage({ type: 'PAGE_NAVIGATED' });
       }, 500);
+    }
+  });
+
+  window.addEventListener('click', (e) => {
+    if (!sessionActive) return;
+    const target = e.target;
+    if (!target) return;
+    
+    const desc = describeElementUnderCursor(target);
+    if (desc) {
+      let actionText = '';
+      if (desc.interactive) {
+        actionText = desc.text;
+      } else {
+        actionText = `Selected: ${desc.label}`;
+        if (desc.context) {
+          actionText += ` in the ${desc.context}`;
+        }
+      }
+      speakText(actionText, true);
     }
   });
 })();

@@ -1,8 +1,23 @@
 # ScreenStream-Access
 
-Accessibility-first Chrome Extension that captures a live video stream of the active browser tab, pushes it to the [Overshoot API](https://docs.overshoot.ai/) via LiveKit WebRTC, tracks mouse movements, and converts real-time VLM spatial analysis into 3D positional audio beacons and spoken labels for blind users navigating complex web interfaces.
+Accessibility-first Chrome Extension that captures a live video stream of the active browser tab, pushes it to the [Overshoot API](https://docs.overshoot.ai/) via LiveKit WebRTC, tracks mouse movements, and converts real-time spatial analysis into warm, spoken labels and confirmations for blind users or people with accesbility issues navigating complex web interfaces.
 
-## Architecture
+---
+
+## 🌟 Key Features
+
+We have built a premium, screen tour guide that navigates websites naturally:
+
+- **📄 DOM Text & Heading Reading**: Direct cursor hover immediately announces the exact text of headings (`H1`-`H6`), paragraphs (`P`), list items (`LI`), and plain text containers, bypassing robotic tags.
+- **🗺️ Structural Landmark Context**: Recognizes key semantic landmark containers and announces where elements reside (e.g. `"... in the navigation bar"`, `"... in the sidebar"`, or `"... in the footer"`).
+- **🗣️ Natural-Speed Human Voice**: Playback rate is set to a natural `1.0` speed for ElevenLabs narration and local TTS fallbacks, ensuring voice guidance is warm, clear, and human rather than robotic or rushed.
+- **🔇 Quiet Empty-Space Exploration**: Silenced distance-in-pixel coordinate descriptions and empty-space ticking noise. The guide is completely silent while traversing empty space, and speaks only when elements are directly hovered, clicked, or when the cursor stops (lingers) near an item.
+- **✨ Smart Click Guiding**: Intercepts element clicks to speak natural, action-oriented responses detailing what that click does (e.g., `"Clicking this will lead you to the store page to browse all available products"` or `"Selected: [text]"`).
+- **⏳ Lazy Page Description**: The visual language model's detailed page overview is lazily evaluated on load. If the user starts exploring immediately, the pending background overview is cancelled, avoiding delayed audio interruptions.
+
+---
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
@@ -14,112 +29,109 @@ Accessibility-first Chrome Extension that captures a live video stream of the ac
   │ offscreen.js ──────────────────────────────▶  LiveKit Room (video)
   │ content.js
   │   ├─ Mouse tracking (100ms throttle)
-  │   ├─ Spatial audio (Web Audio API + HRTF PannerNode)
-  │   └─ Speech labels (SpeechSynthesis on 500ms idle)
+  │   ├─ Natural speech labels (instant direct hit / 500ms idle linger)
+  │   └─ Window click interception & confirmation guidance
 ```
 
-## Prerequisites
+---
+
+## ⚙️ Prerequisites
 
 - **Node.js 18+**
 - **Google Chrome**
 - **Overshoot API key** (`ovs-...`) — get one from the [Overshoot dashboard](https://docs.overshoot.ai/)
+- **ElevenLabs API key** (`sk_...`) — for high-quality natural narration (optional, falls back to local Chrome TTS)
 
-## Setup
+---
+
+## 🚀 Setup
 
 ### 1. Server
 
-```bash
-cd server
-cp .env.example .env
-# Edit .env and paste your Overshoot API key
-npm install
-npm run dev
-```
+1. Navigate to the `server/` directory:
+   ```bash
+   cd server
+   ```
+2. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+3. Edit the `.env` file and paste your `OVERSHOOT_API_KEY` and optional `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`.
+4. Install dependencies and start the dev server:
+   ```bash
+   npm install
+   npm run dev
+   ```
 
-The server starts on `http://localhost:3000`. Verify with:
-
+The server starts on `http://localhost:3000`. You can verify it is healthy with:
 ```bash
 curl http://localhost:3000/api/health
 ```
 
 ### 2. Extension
 
-```bash
-cd extension
-npm install
-npm run build
-```
+1. Navigate to the `extension/` directory:
+   ```bash
+   cd extension
+   ```
+2. Install dependencies and build the offscreen assets:
+   ```bash
+   npm install
+   npm run build
+   ```
 
-This bundles the LiveKit client into `dist/offscreen.bundle.js`.
+---
 
-### 3. Load in Chrome
+## 🔌 Load in Chrome
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `extension/` directory
-5. The ScreenStream-Access icon appears in your toolbar
+1. Open a new tab and navigate to `chrome://extensions`.
+2. Toggle on **Developer mode** in the top-right corner.
+3. Click **Load unpacked** in the top-left corner.
+4. Select the `extension/` directory in this workspace.
+5. The ScreenStream-Access icon (pink target) will appear in your extensions list.
 
-## Usage
+---
 
-1. Navigate to any web page
-2. Click the extension icon
-3. Press **Start Session** — this:
-   - Creates an Overshoot stream via the backend
-   - Captures the active tab's video at 480p/15fps
-   - Publishes it to the Overshoot LiveKit room
-   - Begins streaming VLM inference results
-4. Move your mouse — you'll hear:
-   - **Spatial audio beacons**: panned left/right/front/back based on nearest interactive element direction, tick rate based on distance
-   - **Spoken labels**: when you pause on a new element for 500ms (toggle in popup)
-5. Press **Stop Session** to end
+## 🛠️ Testing & Debugging with Chrome DevTools
 
-## Configuration
+Developers can inspect different contexts of the extension to verify the guide is tracking mouse coordinates, processing DOM elements, and synthesizing text:
 
-### Server environment (`.env`)
+### 1. Inspecting Content Scripts (Content / Webpage)
+To see mousemove events, DOM element analysis, structural context matches, and clicked items:
+1. Open any webpage (e.g. `https://apple.com/shop/buy-iphone`).
+2. Right-click anywhere on the page and select **Inspect** to open Developer Tools.
+3. Go to the **Console** tab.
+4. Filter by logs or type `[ScreenStream]` to view incoming state transitions, direct hit evaluations, and cursor tracking.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OVERSHOOT_API_KEY` | — | Your `ovs-...` API key (required) |
-| `PORT` | `3000` | Server port |
-| `OVERSHOOT_MODEL` | `google/gemma-4-E2B-it` | VLM model for inference |
-| `OVERSHOOT_BASE_URL` | `https://api.overshoot.ai/v1` | API base URL |
+### 2. Inspecting the Service Worker (Background Script)
+To inspect server communication, keepalives, VLM frame completions, and audio triggers:
+1. Go to `chrome://extensions`.
+2. Find the **ScreenStream-Access** card.
+3. Click on the **service worker** link (under "Inspect views").
+4. A new DevTools window will open showing logs for server connections, LiveKit WebRTC state, and API requests.
 
-### Audio behavior
+### 3. Inspecting the Offscreen Document (Audio Engine)
+To verify base64 audio playbacks, ElevenLabs state, and local speech callbacks:
+1. Open `chrome://inspect/#other`.
+2. Locate the line corresponding to `chrome-extension://.../offscreen.html`.
+3. Click **inspect** to open DevTools for the offscreen audio player.
+4. Watch the console logs for audio events, playback speeds, and status updates.
 
-| Parameter | Value | Location |
-|-----------|-------|----------|
-| Mouse throttle | 100ms | `content.js` |
-| Idle threshold for speech | 500ms | `content.js` |
-| Min speech interval | 1500ms | `content.js` |
-| Keepalive interval | 90s | `background.js` |
-| Inference poll rate | 100ms | `background.js` |
-| Capture resolution | 854×480 @ 15fps | `offscreen.js` |
+---
 
-## Spatial Audio Mapping
-
-| VLM Response | Audio Effect |
-|-------------|--------------|
-| Direction: E | Pan right |
-| Direction: W | Pan left |
-| Direction: N | Front (lower Z) |
-| Direction: S | Back (higher Z) |
-| ON_OBJECT | Center, fast ticks |
-| `interactive: true` | 880 Hz tone |
-| `interactive: false` | 440 Hz tone |
-| Small `distance_pixels` | Faster tick rate |
-| Large `distance_pixels` | Slower tick rate |
-
-## Development
+## 🧑‍💻 Development commands
 
 ```bash
-# Watch mode for extension bundle
+# Setup both directories and build in one command (from root):
+npm run setup
+
+# Watch mode for compiling offscreen JS on change:
 cd extension && npm run watch
 
-# Dev mode for server (auto-restart on changes)
+# Hot reload development server:
 cd server && npm run dev
 ```
 
-## License
+## 📄 License
 
 See [LICENSE](./LICENSE).
