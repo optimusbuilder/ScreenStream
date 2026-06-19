@@ -6,9 +6,11 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "verify-key": "node verify-key.js"
+    "verify-key": "node verify-key.js",
+    "verify-gemini": "node verify-gemini.js"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2"

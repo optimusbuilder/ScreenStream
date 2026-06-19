@@ -78,6 +78,14 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'STOP_AUDIO') {
     stopAudio();
   }
+
+  if (msg.type === 'START_VOICE_INPUT') {
+    startVoiceInput();
+  }
+
+  if (msg.type === 'STOP_VOICE_INPUT') {
+    stopVoiceInput();
+  }
 });
 
 async function acquireTabMedia(mediaStreamId) {
@@ -504,4 +512,113 @@ function playSonarSweep(elements) {
     osc.stop(time + 0.20);
   });
 }
+
+let voiceRecognition = null;
+let voiceActive = false;
+
+async function startVoiceInput() {
+  if (voiceActive) return;
+
+  try {
+    // Request microphone permission explicitly via getUserMedia to prompt the user if needed
+    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Stop the temporary track immediately to avoid keeping the mic light on permanently
+    tempStream.getTracks().forEach(t => t.stop());
+    console.log('[offscreen] Microphone permission granted');
+  } catch (err) {
+    console.error('[offscreen] Microphone permission denied:', err);
+    chrome.runtime.sendMessage({
+      type: 'VOICE_ONERROR',
+      error: 'not-allowed'
+    });
+    return;
+  }
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    chrome.runtime.sendMessage({
+      type: 'VOICE_ONERROR',
+      error: 'not-supported'
+    });
+    return;
+  }
+
+  voiceRecognition = new SpeechRecognition();
+  voiceRecognition.continuous = false;
+  voiceRecognition.interimResults = true;
+  voiceRecognition.lang = 'en-US';
+  voiceRecognition.maxAlternatives = 1;
+
+  voiceRecognition.onstart = () => {
+    voiceActive = true;
+    chrome.runtime.sendMessage({ type: 'VOICE_ONSTART' });
+  };
+
+  voiceRecognition.onresult = (event) => {
+    let finalTranscript = '';
+    let interimTranscript = '';
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript;
+      } else {
+        interimTranscript += transcript;
+      }
+    }
+
+    if (interimTranscript) {
+      chrome.runtime.sendMessage({
+        type: 'VOICE_ONRESULT',
+        transcript: interimTranscript,
+        isFinal: false
+      });
+    }
+
+    if (finalTranscript) {
+      voiceActive = false;
+      chrome.runtime.sendMessage({
+        type: 'VOICE_ONRESULT',
+        transcript: finalTranscript.trim(),
+        isFinal: true
+      });
+    }
+  };
+
+  voiceRecognition.onerror = (event) => {
+    console.warn('[offscreen] Speech recognition error:', event.error);
+    voiceActive = false;
+    chrome.runtime.sendMessage({
+      type: 'VOICE_ONERROR',
+      error: event.error
+    });
+  };
+
+  voiceRecognition.onend = () => {
+    voiceActive = false;
+    chrome.runtime.sendMessage({ type: 'VOICE_ONEND' });
+  };
+
+  try {
+    voiceRecognition.start();
+  } catch (err) {
+    console.error('[offscreen] Failed to start speech recognition:', err);
+    voiceActive = false;
+    chrome.runtime.sendMessage({
+      type: 'VOICE_ONERROR',
+      error: err.message
+    });
+  }
+}
+
+function stopVoiceInput() {
+  if (voiceRecognition) {
+    try {
+      voiceRecognition.abort();
+    } catch (e) { /* ignore */ }
+    voiceRecognition = null;
+  }
+  voiceActive = false;
+}
+
 

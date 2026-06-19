@@ -1,6 +1,7 @@
 const BASE_URL = process.env.OVERSHOOT_BASE_URL || 'https://api.overshoot.ai/v1';
 const API_KEY = () => process.env.OVERSHOOT_API_KEY;
 const MODEL = () => process.env.OVERSHOOT_MODEL || 'Qwen/Qwen3.6-27B-FP8';
+const memory = require('./memory');
 
 // Stateful message history for the conversational guide
 const sessionHistories = {};
@@ -120,6 +121,7 @@ async function keepalive(streamId) {
 
 async function deleteStream(streamId) {
   delete sessionHistories[streamId]; // Clear conversational history
+  memory.clearSession(streamId);     // Clear new memory service state
   const res = await fetchWithTimeout(`${BASE_URL}/streams/${streamId}`, {
     method: 'DELETE',
     headers: headers(),

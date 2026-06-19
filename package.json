@@ -8,6 +8,7 @@
     "build": "cd extension && npm run build",
     "dev": "cd server && npm run dev",
     "verify-key": "cd server && node verify-key.js",
+    "verify-gemini": "cd server && npm run verify-gemini",
     "setup": "npm run install:all && npm run build && echo '\n✅ Ready — add your key to server/.env, then run: npm run dev'"
   }
 }

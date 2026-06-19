@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const sessionRoutes = require('./routes/session');
 const inferenceRoutes = require('./routes/inference');
+const converseRoutes = require('./routes/converse');
 const overshoot = require('./services/overshoot');
 
 const app = express();
@@ -37,13 +38,20 @@ app.get('/api/models', async (_req, res) => {
 
 app.use('/api/session', requireApiKey, sessionRoutes);
 app.use('/api/inference', requireApiKey, inferenceRoutes);
+app.use('/api/converse', requireApiKey, converseRoutes);
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`[ScreenStream] Server running on http://localhost:${PORT}`);
   if (!process.env.OVERSHOOT_API_KEY) {
     console.warn('[ScreenStream] WARNING: No OVERSHOOT_API_KEY set. Session and inference endpoints will return 503.');
     console.warn('[ScreenStream] Copy server/.env.example to server/.env and add your key.');
   } else {
     console.log('[ScreenStream] API key configured');
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn('[ScreenStream] WARNING: No GEMINI_API_KEY set. Conversational features will not work.');
+    console.warn('[ScreenStream] Get a free key at https://aistudio.google.com/apikey');
+  } else {
+    console.log('[ScreenStream] Gemini API key configured');
   }
 });

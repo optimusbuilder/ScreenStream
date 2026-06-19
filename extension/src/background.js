@@ -100,6 +100,70 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch((err) => sendResponse({ success: false, error: err.message }));
       return true;
 
+    case 'VOICE_TRANSCRIPT':
+      handleVoiceTranscript(msg, sender)
+        .then(() => sendResponse({ success: true }))
+        .catch((err) => {
+          console.error('[bg] Voice transcript error:', err);
+          sendResponse({ success: false, error: err.message });
+        });
+      return true;
+
+    case 'START_VOICE_INPUT':
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_VOICE_INPUT' }).catch(() => {});
+      return false;
+
+    case 'STOP_VOICE_INPUT':
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_VOICE_INPUT' }).catch(() => {});
+      return false;
+
+    case 'VOICE_ONSTART':
+      if (contentTabId) {
+        chrome.tabs.sendMessage(contentTabId, { type: 'VOICE_ONSTART' }).catch(() => {});
+      }
+      return false;
+
+    case 'VOICE_ONRESULT':
+      if (contentTabId) {
+        chrome.tabs.sendMessage(contentTabId, {
+          type: 'VOICE_ONRESULT',
+          transcript: msg.transcript,
+          isFinal: msg.isFinal
+        }).catch(() => {});
+      }
+      return false;
+
+    case 'VOICE_ONERROR':
+      if (msg.error === 'not-allowed') {
+        console.log('[bg] Microphone access not allowed. Opening permission.html...');
+        chrome.tabs.create({ url: chrome.runtime.getURL('permission.html') });
+        if (contentTabId) {
+          chrome.tabs.sendMessage(contentTabId, {
+            type: 'VOICE_ONERROR',
+            error: 'permission-request-opened'
+          }).catch(() => {});
+        }
+      } else {
+        if (contentTabId) {
+          chrome.tabs.sendMessage(contentTabId, {
+            type: 'VOICE_ONERROR',
+            error: msg.error
+          }).catch(() => {});
+        }
+      }
+      return false;
+
+    case 'PERMISSION_GRANTED':
+      console.log('[bg] Microphone permission granted. Starting speech input...');
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_VOICE_INPUT' }).catch(() => {});
+      return false;
+
+    case 'VOICE_ONEND':
+      if (contentTabId) {
+        chrome.tabs.sendMessage(contentTabId, { type: 'VOICE_ONEND' }).catch(() => {});
+      }
+      return false;
+
     case 'VISUAL_LENS':
       handleVisualLens(msg.x, msg.y, msg.context)
         .then((result) => sendResponse({ success: true, description: result.description, audio: result.audio }))
@@ -458,6 +522,76 @@ async function handleVisualLens(x, y, context) {
   }
 
   return res.json();
+}
+
+async function handleVoiceTranscript(msg, sender) {
+  if (!session) throw new Error('No active session');
+
+  const tabId = sender?.tab?.id || contentTabId;
+
+  try {
+    const res = await fetch(`${SERVER_URL}/api/converse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        streamId: session.streamId,
+        transcript: msg.transcript,
+        cursorX: msg.cursorX,
+        cursorY: msg.cursorY,
+        currentUrl: msg.currentUrl,
+        pageTitle: msg.pageTitle,
+        viewportWidth: msg.viewportWidth,
+        viewportHeight: msg.viewportHeight,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const errorMsg = body.error || `Conversation server error ${res.status}`;
+      console.error('[bg] Converse error:', errorMsg);
+
+      // Notify content script of the error
+      if (tabId) {
+        chrome.tabs.sendMessage(tabId, {
+          type: 'CONVERSE_RESULT',
+          reply: `I encountered an error: ${errorMsg}. Try again with Alt Shift M.`,
+          audio: null,
+          actions: [],
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    const data = await res.json();
+
+    // Send the conversational response to the content script
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CONVERSE_RESULT',
+        reply: data.reply,
+        audio: data.audio,
+        actions: data.actions || [],
+      }).catch(() => {});
+    }
+
+    // Also relay to popup for visual display
+    chrome.runtime.sendMessage({
+      type: 'CONVERSE_RESULT',
+      reply: data.reply,
+      actions: data.actions || [],
+    }).catch(() => {});
+  } catch (err) {
+    console.error('[bg] Voice transcript handling failed:', err);
+
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CONVERSE_RESULT',
+        reply: 'Something went wrong processing your request. Try again with Alt Shift M.',
+        audio: null,
+        actions: [],
+      }).catch(() => {});
+    }
+  }
 }
 
 function startKeepalive() {
