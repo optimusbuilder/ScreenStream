@@ -10,6 +10,7 @@ let offscreenReadyResolver = null;
 let mediaAcquiredResolver = null;
 let offscreenPongResolver = null;
 let captureReadyResolver = null;
+let permissionTabOpened = false;
 
 // Chrome requires tabCapture from a direct icon click — popup buttons break the gesture chain.
 chrome.action.onClicked.addListener(async (tab) => {
@@ -135,13 +136,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'VOICE_ONERROR':
       if (msg.error === 'not-allowed') {
-        console.log('[bg] Microphone access not allowed. Opening permission.html...');
-        chrome.tabs.create({ url: chrome.runtime.getURL('permission.html') });
-        if (contentTabId) {
-          chrome.tabs.sendMessage(contentTabId, {
-            type: 'VOICE_ONERROR',
-            error: 'permission-request-opened'
-          }).catch(() => {});
+        if (!permissionTabOpened) {
+          permissionTabOpened = true;
+          console.log('[bg] Microphone access not allowed. Opening permission.html...');
+          chrome.tabs.create({ url: chrome.runtime.getURL('permission.html') }, (tab) => {
+            const tabId = tab.id;
+            const listener = (closedTabId) => {
+              if (closedTabId === tabId) {
+                permissionTabOpened = false;
+                chrome.tabs.onRemoved.removeListener(listener);
+              }
+            };
+            chrome.tabs.onRemoved.addListener(listener);
+          });
+          if (contentTabId) {
+            chrome.tabs.sendMessage(contentTabId, {
+              type: 'VOICE_ONERROR',
+              error: 'permission-request-opened'
+            }).catch(() => {});
+          }
+        } else {
+          console.warn('[bg] Permission request already attempted. Relaying not-allowed error.');
+          permissionTabOpened = false;
+          if (contentTabId) {
+            chrome.tabs.sendMessage(contentTabId, {
+              type: 'VOICE_ONERROR',
+              error: 'not-allowed'
+            }).catch(() => {});
+          }
         }
       } else {
         if (contentTabId) {
@@ -154,8 +176,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
 
     case 'PERMISSION_GRANTED':
-      console.log('[bg] Microphone permission granted. Starting speech input...');
-      chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_VOICE_INPUT' }).catch(() => {});
+      console.log('[bg] Microphone permission granted. Starting speech input with delay...');
+      permissionTabOpened = false;
+      setTimeout(() => {
+        chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_VOICE_INPUT' }).catch(() => {});
+      }, 500);
       return false;
 
     case 'VOICE_ONEND':
