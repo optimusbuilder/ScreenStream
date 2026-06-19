@@ -918,7 +918,7 @@
     if (!sessionActive) return;
 
     // Alt+Shift+R: Re-read current element
-    if (e.altKey && e.shiftKey && e.key === 'R') {
+    if (e.altKey && e.shiftKey && e.code === 'KeyR') {
       e.preventDefault();
       if (currentTargetCoord) {
         speakText(`Move toward ${currentTargetCoord.name}. ${currentTargetCoord.description}`, true);
@@ -930,19 +930,19 @@
     }
 
     // Alt+Shift+V: Describe what you're pointing at (visual lens)
-    if (e.altKey && e.shiftKey && e.key === 'V') {
+    if (e.altKey && e.shiftKey && e.code === 'KeyV') {
       e.preventDefault();
       requestVlmLens(latestMouse.x, latestMouse.y);
     }
 
     // Alt+Shift+S: Page layout sonar sweep
-    if (e.altKey && e.shiftKey && e.key === 'S') {
+    if (e.altKey && e.shiftKey && e.code === 'KeyS') {
       e.preventDefault();
       triggerSonarSweep();
     }
 
     // Alt+Shift+M: Toggle push-to-talk voice input
-    if (e.altKey && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
+    if (e.altKey && e.shiftKey && e.code === 'KeyM') {
       e.preventDefault();
       toggleVoiceInput();
     }
